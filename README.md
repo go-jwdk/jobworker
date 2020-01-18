@@ -114,6 +114,31 @@ func (l *Logger) Debug(v ...interface{}) {
 var logger = &Logger{}
 ```
 
+### enqueue
+
+```go
+sqs, err := jobworker.Open("sqs", map[string]interface{}{
+    "Region":          os.Getenv("REGION"),
+    "AccessKeyID":     os.Getenv("ACCESS_KEY_ID"),
+    "SecretAccessKey": os.Getenv("SECRET_ACCESS_KEY"),
+})
+
+jw, err := jobworker.New(&jobworker.Setting{
+    DeadConnectorRetryInterval: 10,
+    Primary:                    sqs,
+    Logger:                     logger,
+})
+
+err := jw.EnqueueJob(context.Background(), &jobworker.EnqueueJobInput{
+    Queue: "test_queue",
+    Payload: &jobworker.Payload{
+        Class:        "hello",
+        Args:         fmt.Sprintf(`{"msg":"%s"}`, "Hello Go JWDK!"),
+        DelaySeconds: 3,
+    },
+})
+```
+
 ### with secondary
 
 ```go
