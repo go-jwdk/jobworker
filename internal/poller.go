@@ -12,7 +12,7 @@ type Poller struct {
 	LoggerFunc func(...interface{})
 }
 
-func (p *Poller) Poll(
+func (p *Poller) Start(
 	interval time.Duration,
 	quit <-chan struct{},
 	operation func(ctx context.Context) error,
@@ -44,6 +44,7 @@ func (p *Poller) Poll(
 			timeout := time.After(interval)
 			select {
 			case <-quit:
+				p.LoggerFunc("received a quit notification")
 				return
 			case <-timeout:
 			}

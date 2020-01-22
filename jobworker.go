@@ -211,7 +211,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 		for name, interval := range s.Queue2PollingInterval {
 
 			go func(interval int64, conn Connector, queue string) {
-				p.Poll(time.Duration(interval)*time.Second, done, func(ctx context.Context) error {
+				p.Start(time.Duration(interval)*time.Second, done, func(ctx context.Context) error {
 					return jw.receiveJobsForWorkers(ctx, conn, queue, jobCh)
 				}, func(err error) bool {
 					return err == ErrNoJob
@@ -221,12 +221,23 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 		}
 	}
 
+	trackedJobCh := make(chan *Job)
+	defer func() {
+		close(trackedJobCh)
+	}()
+	go func() {
+		for v := range jobCh {
+			jw.trackJob(v, true)
+			trackedJobCh <- v
+		}
+	}()
+
 	var wg sync.WaitGroup
 	for i := 0; i < s.WorkerConcurrency; i++ {
 		wg.Add(1)
 		go func(id int) {
 			sw := subWorker{id: strconv.Itoa(id), JobWorker: jw}
-			sw.work(jobCh)
+			sw.work(trackedJobCh)
 			wg.Done()
 		}(i)
 	}
@@ -251,6 +262,8 @@ func (sw *subWorker) work(jobs <-chan *Job) {
 func (jw *JobWorker) workSafely(ctx context.Context, j *Job) {
 
 	jw.debug("start work safely:", j.GetConnName(), j.Class, j.JobID)
+
+	defer jw.trackJob(j, false)
 
 	j.SetLoggerFunc(jw.debug)
 
@@ -380,6 +393,7 @@ func (jw *JobWorker) trackJob(j *Job, add bool) {
 		delete(jw.activeJob, j)
 		jw.activeJobWg.Done()
 	}
+	jw.debug("active job size:", len(jw.activeJob))
 }
 
 func (jw *JobWorker) getDoneChan() <-chan struct{} {

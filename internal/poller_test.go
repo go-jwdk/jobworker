@@ -17,7 +17,7 @@ func TestPoll(t *testing.T) {
 		val    int
 	)
 	go func() {
-		poller.Poll(time.Second, quit, func(ctx context.Context) error {
+		poller.Start(time.Second, quit, func(ctx context.Context) error {
 			val++
 			return nil
 		}, func(err error) bool {
@@ -29,7 +29,7 @@ func TestPoll(t *testing.T) {
 
 	want := 1
 	if val != want {
-		t.Fatalf("Poll() = %v, want %v", val, want)
+		t.Fatalf("Start() = %v, want %v", val, want)
 		return
 	}
 }
