@@ -15,16 +15,18 @@ type Driver interface {
 var (
 	driversMu   sync.RWMutex
 	name2Driver = make(map[string]Driver)
+
+	ErrJobDuplicationDetected = fmt.Errorf("job duplication detected")
 )
 
 func Register(name string, driver Driver) {
 	driversMu.Lock()
 	defer driversMu.Unlock()
 	if driver == nil {
-		panic("jwdk: Register Driver is nil")
+		panic("JWDK: Register Driver is nil")
 	}
 	if _, dup := name2Driver[name]; dup {
-		panic("jwdk: Register called twice for Driver " + name)
+		panic("JWDK: Register called twice for Driver " + name)
 	}
 	name2Driver[name] = driver
 }
@@ -34,29 +36,21 @@ func Open(driverName string, attrs map[string]interface{}) (Connector, error) {
 	driveri, ok := name2Driver[driverName]
 	driversMu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("jwdk: unknown driver %q (forgotten import?)", driverName)
+		return nil, fmt.Errorf("JWDK: unknown driver %q (forgotten import?)", driverName)
 	}
 	return driveri.Open(attrs)
 }
 
-type ReceiveJobsInput struct {
-	Queue string
-}
-
-type ReceiveJobsOutput struct {
-	NoJob bool
-}
-
-type EnqueueJobInput struct {
-	Queue   string
-	Payload *Payload
-}
-
-type EnqueueJobOutput struct {
-	JobID string
-}
-
 type Option struct {
+	// TODO remove (Metadata value examples below)
+	//SecID           uint64
+	//ReceiptID       string
+	//DeduplicationID string
+	//GroupID         string
+	//InvisibleUntil  int64
+	//RetryCount      int64
+	//EnqueueAt       int64
+	Metadata map[string]string
 }
 
 func (o *Option) ApplyOptions(opts ...func(*Option)) {
@@ -65,14 +59,34 @@ func (o *Option) ApplyOptions(opts ...func(*Option)) {
 	}
 }
 
-var ErrJobDuplicationDetected = fmt.Errorf("job duplication detected")
-
-type EnqueueJobBatchInput struct {
-	Queue      string
-	Id2Payload map[string]*Payload
+type Subscription interface {
+	Active() bool
+	Queue() chan *Job
+	UnSubscribe() error
 }
 
-type EnqueueJobBatchOutput struct {
+type SubscribeInput struct {
+	Queue    string
+	Interval time.Duration
+}
+
+type SubscribeOutput struct {
+	Subscription Subscription
+}
+
+type EnqueueInput struct {
+	Queue   string
+	Payload string
+}
+
+type EnqueueOutput struct{}
+
+type EnqueueBatchInput struct {
+	Queue      string
+	Id2Payload map[string]string
+}
+
+type EnqueueBatchOutput struct {
 	Failed     []string // ID
 	Successful []string // ID
 }
@@ -89,54 +103,15 @@ type FailJobInput struct {
 
 type FailJobOutput struct{}
 
-type ChangeJobVisibilityInput struct {
-	Job               *Job
-	VisibilityTimeout int64
-}
-
-type ChangeJobVisibilityOutput struct{}
-
-type CreateQueueInput struct {
-	Name       string
-	Attributes map[string]interface{}
-}
-
-type CreateQueueOutput struct{}
-
-type UpdateQueueInput struct {
-	Name       string
-	Attributes map[string]interface{}
-}
-
-type UpdateQueueOutput struct{}
-
-type RedriveJobInput struct {
-	From         string
-	To           string
-	Target       string
-	DelaySeconds int64
-}
-
-type RedriveJobOutput struct{}
-
 type Connector interface {
 	GetName() string
-
-	ReceiveJobs(ctx context.Context, ch chan<- *Job, input *ReceiveJobsInput, opts ...func(*Option)) (*ReceiveJobsOutput, error)
-	EnqueueJob(ctx context.Context, input *EnqueueJobInput, opts ...func(*Option)) (*EnqueueJobOutput, error)
-	EnqueueJobBatch(ctx context.Context, input *EnqueueJobBatchInput, opts ...func(*Option)) (*EnqueueJobBatchOutput, error)
+	Subscribe(ctx context.Context, input *SubscribeInput, opts ...func(*Option)) (*SubscribeOutput, error)
+	Enqueue(ctx context.Context, input *EnqueueInput, opts ...func(*Option)) (*EnqueueOutput, error)
+	EnqueueBatch(ctx context.Context, input *EnqueueBatchInput, opts ...func(*Option)) (*EnqueueBatchOutput, error)
 	CompleteJob(ctx context.Context, input *CompleteJobInput, opts ...func(*Option)) (*CompleteJobOutput, error)
 	FailJob(ctx context.Context, input *FailJobInput, opts ...func(*Option)) (*FailJobOutput, error)
-	ChangeJobVisibility(ctx context.Context, input *ChangeJobVisibilityInput, opts ...func(*Option)) (*ChangeJobVisibilityOutput, error)
-
-	CreateQueue(ctx context.Context, input *CreateQueueInput, opts ...func(*Option)) (*CreateQueueOutput, error)
-	UpdateQueue(ctx context.Context, input *UpdateQueueInput, opts ...func(*Option)) (*UpdateQueueOutput, error)
-
-	RedriveJob(ctx context.Context, input *RedriveJobInput, opts ...func(*Option)) (*RedriveJobOutput, error)
-
 	Close() error
-
-	SetLogger(logger Logger)
+	SetLoggerFunc(f LoggerFunc)
 }
 
 type ConnectorProvider struct {
@@ -214,3 +189,33 @@ func (p *ConnectorProvider) Close() {
 		_ = conn.Close()
 	}
 }
+
+type ChangeJobVisibilityInput struct {
+	Job               *Job
+	VisibilityTimeout int64
+}
+
+type ChangeJobVisibilityOutput struct{}
+
+type CreateQueueInput struct {
+	Name       string
+	Attributes map[string]interface{}
+}
+
+type CreateQueueOutput struct{}
+
+type UpdateQueueInput struct {
+	Name       string
+	Attributes map[string]interface{}
+}
+
+type UpdateQueueOutput struct{}
+
+type RedriveJobInput struct {
+	From         string
+	To           string
+	Target       string
+	DelaySeconds int64
+}
+
+type RedriveJobOutput struct{}

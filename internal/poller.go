@@ -19,7 +19,7 @@ func (p *Poller) Start(
 	isErrorRetryable func(err error) bool,
 ) {
 
-	if p.LoggerFunc != nil {
+	if p.LoggerFunc == nil {
 		p.LoggerFunc = func(...interface{}) {}
 	}
 

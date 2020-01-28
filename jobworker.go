@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/go-job-worker-development-kit/jobworker/internal"
 )
 
 type Setting struct {
@@ -17,7 +15,7 @@ type Setting struct {
 
 	DeadConnectorRetryInterval int64 // Seconds
 
-	Logger Logger
+	LoggerFunc LoggerFunc
 }
 
 var (
@@ -36,7 +34,7 @@ func New(s *Setting) (*JobWorker, error) {
 		w.connProvider.Register(2, s.Secondary)
 	}
 	w.connProvider.SetRetrySeconds(time.Duration(s.DeadConnectorRetryInterval) * time.Second)
-	w.logger = s.Logger
+	w.loggerFunc = s.LoggerFunc
 
 	return &w, nil
 }
@@ -44,25 +42,24 @@ func New(s *Setting) (*JobWorker, error) {
 type JobWorker struct {
 	connProvider ConnectorProvider
 
-	class2worker map[string]Worker
+	queue2worker map[string]Worker
 
-	logger Logger
+	loggerFunc LoggerFunc
 
 	started int32
 
-	inShutdown  int32
-	mu          sync.Mutex
-	activeJob   map[*Job]struct{}
-	activeJobWg sync.WaitGroup
-	doneChan    chan struct{}
-	onShutdown  []func()
+	inShutdown    int32
+	mu            sync.Mutex
+	activeJob     map[*Job]struct{}
+	activeJobWg   sync.WaitGroup
+	doneChan      chan struct{}
+	cardiacArrest chan struct{}
+	onShutdown    []func()
 }
 
-type Logger interface {
-	Debug(...interface{})
-}
+type LoggerFunc func(...interface{})
 
-func (jw *JobWorker) EnqueueJob(ctx context.Context, input *EnqueueJobInput) error {
+func (jw *JobWorker) EnqueueJob(ctx context.Context, input *EnqueueInput) error {
 
 	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
@@ -71,7 +68,7 @@ func (jw *JobWorker) EnqueueJob(ctx context.Context, input *EnqueueJobInput) err
 			continue
 		}
 
-		_, err := conn.EnqueueJob(ctx, input)
+		_, err := conn.Enqueue(ctx, input)
 		if err != nil {
 
 			if err == ErrJobDuplicationDetected {
@@ -88,7 +85,7 @@ func (jw *JobWorker) EnqueueJob(ctx context.Context, input *EnqueueJobInput) err
 	return errors.New("could not enqueue a job using all connector")
 }
 
-func (jw *JobWorker) EnqueueJobBatch(ctx context.Context, input *EnqueueJobBatchInput) error {
+func (jw *JobWorker) EnqueueJobBatch(ctx context.Context, input *EnqueueBatchInput) error {
 	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
 		if jw.connProvider.IsDead(conn) {
@@ -96,7 +93,7 @@ func (jw *JobWorker) EnqueueJobBatch(ctx context.Context, input *EnqueueJobBatch
 			continue
 		}
 
-		output, err := conn.EnqueueJobBatch(ctx, input)
+		output, err := conn.EnqueueBatch(ctx, input)
 
 		if err == nil && output != nil && len(output.Failed) == 0 {
 			return nil
@@ -129,22 +126,22 @@ func (w *defaultWorker) Work(job *Job) error {
 	return w.workFunc(job)
 }
 
-func (jw *JobWorker) RegisterFunc(class string, f WorkerFunc) bool {
-	return jw.Register(class, &defaultWorker{
+func (jw *JobWorker) RegisterFunc(queue string, f WorkerFunc) bool {
+	return jw.Register(queue, &defaultWorker{
 		workFunc: f,
 	})
 }
 
-func (jw *JobWorker) Register(class string, worker Worker) bool {
+func (jw *JobWorker) Register(queue string, worker Worker) bool {
 	jw.mu.Lock()
 	defer jw.mu.Unlock()
-	if class == "" || worker == nil {
+	if queue == "" || worker == nil {
 		return false
 	}
-	if jw.class2worker == nil {
-		jw.class2worker = make(map[string]Worker)
+	if jw.queue2worker == nil {
+		jw.queue2worker = make(map[string]Worker)
 	}
-	jw.class2worker[class] = worker
+	jw.queue2worker[queue] = worker
 	return true
 }
 
@@ -171,8 +168,29 @@ func (s *WorkSetting) setDefaults() {
 var (
 	ErrAlreadyStarted        = errors.New("already started")
 	ErrQueueSettingsRequired = errors.New("queue settings required")
-	ErrNoJob                 = errors.New("no job")
 )
+
+type Broadcaster struct {
+	mu *sync.Mutex
+	c  *sync.Cond
+}
+
+func (b *Broadcaster) Register(operation func()) {
+	if b.c == nil {
+		b.mu = new(sync.Mutex)
+		b.c = sync.NewCond(b.mu)
+	}
+	go func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.c.Wait()
+		operation()
+	}()
+}
+
+func (b *Broadcaster) Broadcast() {
+	b.c.Broadcast()
+}
 
 func (jw *JobWorker) Work(s *WorkSetting) error {
 
@@ -187,50 +205,44 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 		return ErrQueueSettingsRequired
 	}
 
-	done := jw.getDoneChan()
-
 	if s.HeartbeatInterval > 0 && s.OnHeartBeat != nil {
 		interval := time.Duration(s.HeartbeatInterval) * time.Second
-		jw.debug("start heart beat - interval:", interval)
-		jw.startHeartbeat(interval, done, s.OnHeartBeat)
+		jw.startHeartbeat(interval, s.OnHeartBeat)
 	}
 
-	jobCh := make(chan *Job)
-	defer func() {
-		close(jobCh)
+	var b Broadcaster
+	go func() {
+		<-jw.getDoneChan()
+		b.Broadcast()
 	}()
 
-	var p internal.Poller
-	if jw.verbose() {
-		p.LoggerFunc = jw.logger.Debug
-	}
-	p.Retryer.NumMaxRetries = 10
-
-	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
-
-		for name, interval := range s.Queue2PollingInterval {
-
-			go func(interval int64, conn Connector, queue string) {
-				p.Start(time.Duration(interval)*time.Second, done, func(ctx context.Context) error {
-					return jw.receiveJobsForWorkers(ctx, conn, queue, jobCh)
-				}, func(err error) bool {
-					return err == ErrNoJob
-				})
-			}(interval, conn, name)
-
-		}
-	}
+	b.Register(jw.stopHeartbeat)
 
 	trackedJobCh := make(chan *Job)
-	defer func() {
-		close(trackedJobCh)
-	}()
-	go func() {
-		for v := range jobCh {
-			jw.trackJob(v, true)
-			trackedJobCh <- v
+	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
+		for name, interval := range s.Queue2PollingInterval {
+			output, err := conn.Subscribe(context.Background(), &SubscribeInput{
+				Queue:    name,
+				Interval: time.Duration(interval) * time.Second,
+			})
+			if err != nil {
+				return err
+			}
+			b.Register(func() {
+				err := output.Subscription.UnSubscribe()
+				if err != nil {
+					jw.debug("an error occurred during unsubscribe:", name, err)
+				}
+			})
+
+			go func(sub Subscription) {
+				for job := range sub.Queue() {
+					trackedJobCh <- job
+					jw.trackJob(job, true)
+				}
+			}(output.Subscription)
 		}
-	}()
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < s.WorkerConcurrency; i++ {
@@ -243,6 +255,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 	}
 
 	wg.Wait()
+	close(trackedJobCh)
 
 	return nil
 
@@ -261,7 +274,7 @@ func (sw *subWorker) work(jobs <-chan *Job) {
 
 func (jw *JobWorker) workSafely(ctx context.Context, j *Job) {
 
-	jw.debug("start work safely:", j.GetConnName(), j.Class, j.JobID)
+	jw.debug("start work safely:", j.GetConnName(), j.Queue, j.Args)
 
 	defer jw.trackJob(j, false)
 
@@ -270,38 +283,25 @@ func (jw *JobWorker) workSafely(ctx context.Context, j *Job) {
 	jw.trackJob(j, true)
 	defer jw.trackJob(j, false)
 
-	w, ok := jw.class2worker[j.Class]
+	w, ok := jw.queue2worker[j.Queue]
 	if !ok {
-		jw.debug("could not found class:", j.Class)
+		jw.debug("could not found queue:", j.Queue)
 		return
 	}
 
 	if err := w.Work(j); err != nil {
 		if err = j.Fail(ctx); err != nil {
-			jw.debug("mark dead connector, because error occurred during job fail:", j.conn.GetName(), j.Class, j.JobID, err)
+			jw.debug("mark dead connector, because error occurred during job fail:", j.conn.GetName(), j.Queue, j.Args, err)
 			jw.connProvider.MarkDead(j.conn)
 		}
 		return
 	}
 	if err := j.Complete(ctx); err != nil {
-		jw.debug("mark dead connector, because error occurred during job complete:", j.conn.GetName(), j.Class, j.JobID, err)
+		jw.debug("mark dead connector, because error occurred during job complete:", j.conn.GetName(), j.Queue, j.Args, err)
 		jw.connProvider.MarkDead(j.conn)
 		return
 	}
-	jw.debug("success work safely:", j.Class, j.JobID)
-}
-
-func (jw *JobWorker) receiveJobsForWorkers(ctx context.Context, conn Connector, queue string, ch chan<- *Job) error {
-	output, err := conn.ReceiveJobs(ctx, ch, &ReceiveJobsInput{
-		Queue: queue,
-	})
-	if err != nil {
-		return err
-	}
-	if output.NoJob {
-		return ErrNoJob
-	}
-	return nil
+	jw.debug("success work safely:", j.Queue, j.Args)
 }
 
 func (jw *JobWorker) RegisterOnShutdown(f func()) {
@@ -334,29 +334,27 @@ func (jw *JobWorker) Shutdown(ctx context.Context) error {
 	}
 }
 
-const logPrefix = "[jwdk]"
+const logPrefix = "[JWDK]"
 
 func (jw *JobWorker) debug(args ...interface{}) {
 	if jw.verbose() {
 		args = append([]interface{}{logPrefix}, args...)
-		jw.logger.Debug(args...)
+		jw.loggerFunc(args...)
 	}
 }
 
 func (jw *JobWorker) verbose() bool {
-	return jw.logger != nil
+	return jw.loggerFunc != nil
 }
 
-func (jw *JobWorker) startHeartbeat(interval time.Duration, done <-chan struct{}, f func(job *Job)) {
+func (jw *JobWorker) startHeartbeat(interval time.Duration, f func(job *Job)) {
+	jw.debug("start heart beat - interval:", interval)
 	go func() {
-	L:
 		for {
-
 			select {
-			case <-done:
-				break L
+			case <-jw.cardiacArrest:
+				return
 			default:
-
 				var jobs []*Job
 				jw.mu.Lock()
 				for v := range jw.activeJob {
@@ -374,6 +372,11 @@ func (jw *JobWorker) startHeartbeat(interval time.Duration, done <-chan struct{}
 			time.Sleep(interval)
 		}
 	}()
+}
+
+func (jw *JobWorker) stopHeartbeat() {
+	jw.debug("stop heart beat")
+	jw.cardiacArrest <- struct{}{}
 }
 
 func (jw *JobWorker) shuttingDown() bool {
