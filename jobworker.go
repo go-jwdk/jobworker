@@ -104,7 +104,7 @@ func (jw *JobWorker) EnqueueJobBatch(ctx context.Context, input *EnqueueBatchInp
 
 		if output != nil && len(output.Failed) > 0 {
 			for _, id := range output.Successful {
-				delete(input.Id2Payload, id)
+				delete(input.Id2Content, id)
 			}
 		}
 	}
@@ -112,7 +112,7 @@ func (jw *JobWorker) EnqueueJobBatch(ctx context.Context, input *EnqueueBatchInp
 	return errors.New("could not enqueue batch some jobs using all connector")
 }
 
-type WorkerFunc func(*Job) error
+type WorkerFunc func(job *Job) error
 
 type Worker interface {
 	Work(*Job) error
@@ -221,7 +221,8 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 	trackedJobCh := make(chan *Job)
 	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 		for name, interval := range s.Queue2PollingInterval {
-			output, err := conn.Subscribe(context.Background(), &SubscribeInput{
+			ctx := context.Background()
+			output, err := conn.Subscribe(ctx, &SubscribeInput{
 				Queue:    name,
 				Interval: time.Duration(interval) * time.Second,
 			})
@@ -272,36 +273,40 @@ func (sw *subWorker) work(jobs <-chan *Job) {
 	}
 }
 
-func (jw *JobWorker) workSafely(ctx context.Context, j *Job) {
+func (jw *JobWorker) workSafely(ctx context.Context, job *Job) {
 
-	jw.debug("start work safely:", j.GetConnName(), j.Queue, j.Args)
+	conn := job.conn
+	queue := job.Queue()
+	payload := job.Payload()
 
-	defer jw.trackJob(j, false)
+	jw.debug("start work safely:", conn.Name(), queue, payload.Content)
 
-	j.SetLoggerFunc(jw.debug)
+	defer jw.trackJob(job, false)
 
-	jw.trackJob(j, true)
-	defer jw.trackJob(j, false)
+	jw.trackJob(job, true)
+	defer jw.trackJob(job, false)
 
-	w, ok := jw.queue2worker[j.Queue]
+	w, ok := jw.queue2worker[queue]
 	if !ok {
-		jw.debug("could not found queue:", j.Queue)
+		jw.debug("could not found queue:", queue)
 		return
 	}
 
-	if err := w.Work(j); err != nil {
-		if err = j.Fail(ctx); err != nil {
-			jw.debug("mark dead connector, because error occurred during job fail:", j.conn.GetName(), j.Queue, j.Args, err)
-			jw.connProvider.MarkDead(j.conn)
+	if err := w.Work(job); err != nil {
+		if err = failJob(ctx, job); err != nil {
+			jw.debug("mark dead connector, because error occurred during job fail:",
+				conn.Name(), queue, payload.Content, err)
+			jw.connProvider.MarkDead(conn)
 		}
 		return
 	}
-	if err := j.Complete(ctx); err != nil {
-		jw.debug("mark dead connector, because error occurred during job complete:", j.conn.GetName(), j.Queue, j.Args, err)
-		jw.connProvider.MarkDead(j.conn)
+	if err := completeJob(ctx, job); err != nil {
+		jw.debug("mark dead connector, because error occurred during job complete:",
+			conn.Name(), queue, payload.Content, err)
+		jw.connProvider.MarkDead(conn)
 		return
 	}
-	jw.debug("success work safely:", j.Queue, j.Args)
+	jw.debug("success work safely:", conn.Name(), queue, payload.Content)
 }
 
 func (jw *JobWorker) RegisterOnShutdown(f func()) {
@@ -383,17 +388,17 @@ func (jw *JobWorker) shuttingDown() bool {
 	return atomic.LoadInt32(&jw.inShutdown) != 0
 }
 
-func (jw *JobWorker) trackJob(j *Job, add bool) {
+func (jw *JobWorker) trackJob(job *Job, add bool) {
 	jw.mu.Lock()
 	defer jw.mu.Unlock()
 	if jw.activeJob == nil {
 		jw.activeJob = make(map[*Job]struct{})
 	}
 	if add {
-		jw.activeJob[j] = struct{}{}
+		jw.activeJob[job] = struct{}{}
 		jw.activeJobWg.Add(1)
 	} else {
-		delete(jw.activeJob, j)
+		delete(jw.activeJob, job)
 		jw.activeJobWg.Done()
 	}
 	jw.debug("active job size:", len(jw.activeJob))
@@ -419,4 +424,28 @@ func (jw *JobWorker) closeDoneChanLocked() {
 	default:
 		close(ch)
 	}
+}
+
+func completeJob(ctx context.Context, job *Job) error {
+	if job.IsFinished() {
+		return nil
+	}
+	_, err := job.conn.CompleteJob(ctx, &CompleteJobInput{Job: job})
+	if err != nil {
+		return err
+	}
+	job.finished()
+	return nil
+}
+
+func failJob(ctx context.Context, job *Job) error {
+	if job.IsFinished() {
+		return nil
+	}
+	_, err := job.conn.FailJob(ctx, &FailJobInput{Job: job})
+	if err != nil {
+		return err
+	}
+	job.finished()
+	return nil
 }

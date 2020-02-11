@@ -41,17 +41,7 @@ func Open(driverName string, attrs map[string]interface{}) (Connector, error) {
 	return driveri.Open(attrs)
 }
 
-type Option struct {
-	// TODO remove (Metadata value examples below)
-	//SecID           uint64
-	//ReceiptID       string
-	//DeduplicationID string
-	//GroupID         string
-	//InvisibleUntil  int64
-	//RetryCount      int64
-	//EnqueueAt       int64
-	Metadata map[string]string
-}
+type Option struct{}
 
 func (o *Option) ApplyOptions(opts ...func(*Option)) {
 	for _, opt := range opts {
@@ -75,15 +65,19 @@ type SubscribeOutput struct {
 }
 
 type EnqueueInput struct {
-	Queue   string
-	Payload string
+	Queue           string
+	Payload         string
+	Metadata        map[string]string
+	CustomAttribute map[string]*CustomAttribute
 }
 
 type EnqueueOutput struct{}
 
 type EnqueueBatchInput struct {
-	Queue      string
-	Id2Payload map[string]string
+	Queue           string
+	Id2Content      map[string]string
+	Metadata        map[string]string
+	CustomAttribute map[string]*CustomAttribute
 }
 
 type EnqueueBatchOutput struct {
@@ -104,7 +98,7 @@ type FailJobInput struct {
 type FailJobOutput struct{}
 
 type Connector interface {
-	GetName() string
+	Name() string
 	Subscribe(ctx context.Context, input *SubscribeInput, opts ...func(*Option)) (*SubscribeOutput, error)
 	Enqueue(ctx context.Context, input *EnqueueInput, opts ...func(*Option)) (*EnqueueOutput, error)
 	EnqueueBatch(ctx context.Context, input *EnqueueBatchInput, opts ...func(*Option)) (*EnqueueBatchOutput, error)
@@ -189,33 +183,3 @@ func (p *ConnectorProvider) Close() {
 		_ = conn.Close()
 	}
 }
-
-type ChangeJobVisibilityInput struct {
-	Job               *Job
-	VisibilityTimeout int64
-}
-
-type ChangeJobVisibilityOutput struct{}
-
-type CreateQueueInput struct {
-	Name       string
-	Attributes map[string]interface{}
-}
-
-type CreateQueueOutput struct{}
-
-type UpdateQueueInput struct {
-	Name       string
-	Attributes map[string]interface{}
-}
-
-type UpdateQueueOutput struct{}
-
-type RedriveJobInput struct {
-	From         string
-	To           string
-	Target       string
-	DelaySeconds int64
-}
-
-type RedriveJobOutput struct{}
