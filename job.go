@@ -4,18 +4,18 @@ import (
 	"sync/atomic"
 )
 
-func NewJob(conn Connector, queue string, payload *Payload) *Job {
+func NewJob(conn Connector, queueName string, payload *Payload) *Job {
 	return &Job{
-		conn:    conn,
-		queue:   queue,
-		payload: payload,
+		conn:      conn,
+		queueName: queueName,
+		payload:   payload,
 	}
 }
 
 type Job struct {
-	conn    Connector
-	queue   string
-	payload *Payload
+	conn      Connector
+	queueName string
+	payload   *Payload
 
 	didSomething uint32 // atomic
 }
@@ -24,8 +24,8 @@ func (j *Job) ConnName() string {
 	return j.conn.Name()
 }
 
-func (j *Job) Queue() string {
-	return j.queue
+func (j *Job) QueueName() string {
+	return j.queueName
 }
 
 func (j *Job) Payload() *Payload {
@@ -44,7 +44,7 @@ type Payload struct {
 	Content         string
 	Metadata        map[string]string
 	CustomAttribute map[string]*CustomAttribute
-	Raw             interface{}
+	Raw             interface{} // raw data of different jobs for each connector
 }
 
 type CustomAttribute struct {

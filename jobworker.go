@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/go-job-worker-development-kit/jobworker/internal"
 )
 
 type Setting struct {
@@ -59,7 +61,7 @@ type JobWorker struct {
 
 type LoggerFunc func(...interface{})
 
-func (jw *JobWorker) EnqueueJob(ctx context.Context, input *EnqueueInput) error {
+func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) error {
 
 	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
@@ -85,7 +87,7 @@ func (jw *JobWorker) EnqueueJob(ctx context.Context, input *EnqueueInput) error 
 	return errors.New("could not enqueue a job using all connector")
 }
 
-func (jw *JobWorker) EnqueueJobBatch(ctx context.Context, input *EnqueueBatchInput) error {
+func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) error {
 	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
 		if jw.connProvider.IsDead(conn) {
@@ -126,30 +128,26 @@ func (w *defaultWorker) Work(job *Job) error {
 	return w.workFunc(job)
 }
 
-func (jw *JobWorker) RegisterFunc(queue string, f WorkerFunc) bool {
-	return jw.Register(queue, &defaultWorker{
+func (jw *JobWorker) RegisterFunc(queue string, f WorkerFunc) {
+	jw.Register(queue, &defaultWorker{
 		workFunc: f,
 	})
 }
 
-func (jw *JobWorker) Register(queue string, worker Worker) bool {
+func (jw *JobWorker) Register(queue string, worker Worker) {
 	jw.mu.Lock()
 	defer jw.mu.Unlock()
-	if queue == "" || worker == nil {
-		return false
-	}
 	if jw.queue2worker == nil {
 		jw.queue2worker = make(map[string]Worker)
 	}
 	jw.queue2worker[queue] = worker
-	return true
 }
 
 type WorkSetting struct {
 	HeartbeatInterval     int64
 	OnHeartBeat           func(job *Job)
 	WorkerConcurrency     int
-	Queue2PollingInterval map[string]int64 // key: queue name, value; polling interval (seconds)
+	Queue2PollingInterval map[string]int64 // key: queueName name, value; polling interval (seconds)
 }
 
 const (
@@ -170,28 +168,6 @@ var (
 	ErrQueueSettingsRequired = errors.New("queue settings required")
 )
 
-type Broadcaster struct {
-	mu *sync.Mutex
-	c  *sync.Cond
-}
-
-func (b *Broadcaster) Register(operation func()) {
-	if b.c == nil {
-		b.mu = new(sync.Mutex)
-		b.c = sync.NewCond(b.mu)
-	}
-	go func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		b.c.Wait()
-		operation()
-	}()
-}
-
-func (b *Broadcaster) Broadcast() {
-	b.c.Broadcast()
-}
-
 func (jw *JobWorker) Work(s *WorkSetting) error {
 
 	if atomic.LoadInt32(&jw.started) == 1 {
@@ -210,7 +186,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 		jw.startHeartbeat(interval, s.OnHeartBeat)
 	}
 
-	var b Broadcaster
+	var b internal.Broadcaster
 	go func() {
 		<-jw.getDoneChan()
 		b.Broadcast()
@@ -275,38 +251,36 @@ func (sw *subWorker) work(jobs <-chan *Job) {
 
 func (jw *JobWorker) workSafely(ctx context.Context, job *Job) {
 
-	conn := job.conn
-	queue := job.Queue()
+	connName := job.ConnName()
+	queue := job.QueueName()
 	payload := job.Payload()
 
-	jw.debug("start work safely:", conn.Name(), queue, payload.Content)
-
-	defer jw.trackJob(job, false)
+	jw.debug("start work safely:", connName, queue, payload.Content)
 
 	jw.trackJob(job, true)
 	defer jw.trackJob(job, false)
 
 	w, ok := jw.queue2worker[queue]
 	if !ok {
-		jw.debug("could not found queue:", queue)
+		jw.debug("could not found queueName:", queue)
 		return
 	}
 
 	if err := w.Work(job); err != nil {
 		if err = failJob(ctx, job); err != nil {
 			jw.debug("mark dead connector, because error occurred during job fail:",
-				conn.Name(), queue, payload.Content, err)
-			jw.connProvider.MarkDead(conn)
+				connName, queue, payload.Content, err)
+			jw.connProvider.MarkDead(job.conn)
 		}
 		return
 	}
 	if err := completeJob(ctx, job); err != nil {
 		jw.debug("mark dead connector, because error occurred during job complete:",
-			conn.Name(), queue, payload.Content, err)
-		jw.connProvider.MarkDead(conn)
+			connName, queue, payload.Content, err)
+		jw.connProvider.MarkDead(job.conn)
 		return
 	}
-	jw.debug("success work safely:", conn.Name(), queue, payload.Content)
+	jw.debug("success work safely:", connName, queue, payload.Content)
 }
 
 func (jw *JobWorker) RegisterOnShutdown(f func()) {

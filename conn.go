@@ -99,11 +99,11 @@ type FailJobOutput struct{}
 
 type Connector interface {
 	Name() string
-	Subscribe(ctx context.Context, input *SubscribeInput, opts ...func(*Option)) (*SubscribeOutput, error)
-	Enqueue(ctx context.Context, input *EnqueueInput, opts ...func(*Option)) (*EnqueueOutput, error)
-	EnqueueBatch(ctx context.Context, input *EnqueueBatchInput, opts ...func(*Option)) (*EnqueueBatchOutput, error)
-	CompleteJob(ctx context.Context, input *CompleteJobInput, opts ...func(*Option)) (*CompleteJobOutput, error)
-	FailJob(ctx context.Context, input *FailJobInput, opts ...func(*Option)) (*FailJobOutput, error)
+	Subscribe(ctx context.Context, input *SubscribeInput) (*SubscribeOutput, error)
+	Enqueue(ctx context.Context, input *EnqueueInput) (*EnqueueOutput, error)
+	EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) (*EnqueueBatchOutput, error)
+	CompleteJob(ctx context.Context, input *CompleteJobInput) (*CompleteJobOutput, error)
+	FailJob(ctx context.Context, input *FailJobInput) (*FailJobOutput, error)
 	Close() error
 	SetLoggerFunc(f LoggerFunc)
 }
