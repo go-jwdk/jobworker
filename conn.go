@@ -57,7 +57,7 @@ type Subscription interface {
 
 type SubscribeInput struct {
 	Queue    string
-	Interval time.Duration
+	Metadata map[string]string
 }
 
 type SubscribeOutput struct {
