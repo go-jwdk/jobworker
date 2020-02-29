@@ -1,4 +1,4 @@
-module github.com/go-job-worker-development-kit/jobworker
+module github.com/go-jwdk/jobworker
 
 go 1.13
 

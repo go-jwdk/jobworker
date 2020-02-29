@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-job-worker-development-kit/jobworker/internal"
+	"github.com/go-jwdk/jobworker/internal"
 )
 
 type Setting struct {

@@ -8,10 +8,10 @@ The jobworker package must be used in conjunction with some message queue connec
 
 list of connectors:
 
-- [__go-job-worker-development-kit/aws-sqs-connector/sqs__](https://github.com/go-job-worker-development-kit/aws-sqs-connector/)
-- [__go-job-worker-development-kit/db-connector/mysql__](https://github.com/go-job-worker-development-kit/db-connector/)
-- [__go-job-worker-development-kit/db-connector/postgres__](https://github.com/go-job-worker-development-kit/db-connector/)
-- [__go-job-worker-development-kit/db-connector/sqlite3__](https://github.com/go-job-worker-development-kit/db-connector/)
+- [__go-jwdk/aws-sqs-connector/sqs__](https://github.com/go-jwdk/aws-sqs-connector/)
+- [__go-jwdk/db-connector/mysql__](https://github.com/go-jwdk/db-connector/)
+- [__go-jwdk/db-connector/postgres__](https://github.com/go-jwdk/db-connector/)
+- [__go-jwdk/db-connector/sqlite3__](https://github.com/go-jwdk/db-connector/)
 
 ## Requirements
 
@@ -22,7 +22,7 @@ Go 1.13+
 This package can be installed with the go get command:
 
 ```
-$ go get -u github.com/go-job-worker-development-kit/jobworker
+$ go get -u github.com/go-jwdk/jobworker
 ```
 
 ## Usage
@@ -40,8 +40,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-job-worker-development-kit/jobworker"
-	_ "github.com/go-job-worker-development-kit/awa-sqs-connector/sqs"
+	"github.com/go-jwdk/jobworker"
+	_ "github.com/go-jwdk/awa-sqs-connector/sqs"
 )
 
 func main() {
@@ -143,9 +143,9 @@ err := jw.EnqueueJob(context.Background(), &jobworker.EnqueueJobInput{
 
 ```go
 import (
-    "github.com/go-job-worker-development-kit/jobworker"
-    _ "github.com/go-job-worker-development-kit/awa-sqs-connector/sqs"
-    _ "github.com/go-job-worker-development-kit/db-connector/mysql"
+    "github.com/go-jwdk/jobworker"
+    _ "github.com/go-jwdk/awa-sqs-connector/sqs"
+    _ "github.com/go-jwdk/db-connector/mysql"
 )
 
 sqs, err := jobworker.Open("sqs", map[string]interface{}{
