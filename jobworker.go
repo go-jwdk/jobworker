@@ -198,9 +198,10 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 		for name, interval := range s.Queue2PollingInterval {
 			ctx := context.Background()
+			metadata := make(map[string]string)
+			metadata["PollingInterval"] = strconv.FormatInt(interval, 10)
 			output, err := conn.Subscribe(ctx, &SubscribeInput{
 				Queue:    name,
-				Interval: time.Duration(interval) * time.Second,
 			})
 			if err != nil {
 				return err

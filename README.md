@@ -30,6 +30,8 @@ $ go get -u github.com/go-jwdk/jobworker
 
 ### Basically
 
+Implements worker processes using go-jwdk/awa-sqs-connector.
+
 ```go
 package main
 
@@ -115,7 +117,9 @@ func (l *Logger) Debug(v ...interface{}) {
 var logger = &Logger{}
 ```
 
-### enqueue
+### Enqueue/EnqueueBatch
+
+Implements job enqueue.
 
 ```go
 sqs, err := jobworker.Open("sqs", map[string]interface{}{
@@ -140,7 +144,12 @@ err := jw.EnqueueJob(context.Background(), &jobworker.EnqueueJobInput{
 })
 ```
 
-### with secondary
+### Primary/Secondary
+
+Set up primary and secondary connectors.
+
+- __Primary:__ go-jwdk/awa-sqs-connector/sqs
+- __Secondary:__ go-jwdk/db-connector/mysql
 
 ```go
 import (
@@ -155,7 +164,7 @@ sqs, err := jobworker.Open("sqs", map[string]interface{}{
     "SecretAccessKey": os.Getenv("SECRET_ACCESS_KEY"),
 })
 
-sqlite3, err := jobworker.Open("mysql", map[string]interface{}{
+mysql, err := jobworker.Open("mysql", map[string]interface{}{
     "DSN":             "test-db",
     "MaxOpenConns":    3,
     "MaxMaxIdleConns": 3,
