@@ -9,6 +9,7 @@ The jobworker package must be used in conjunction with some message queue connec
 list of connectors:
 
 - [__go-jwdk/aws-sqs-connector/sqs__](https://github.com/go-jwdk/aws-sqs-connector/)
+- [__go-jwdk/activemq-connector/activemq__](https://github.com/go-jwdk/activemq-connector/)
 - [__go-jwdk/db-connector/mysql__](https://github.com/go-jwdk/db-connector/)
 - [__go-jwdk/db-connector/postgres__](https://github.com/go-jwdk/db-connector/)
 - [__go-jwdk/db-connector/sqlite3__](https://github.com/go-jwdk/db-connector/)
