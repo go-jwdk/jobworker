@@ -201,7 +201,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 			metadata := make(map[string]string)
 			metadata["PollingInterval"] = strconv.FormatInt(interval, 10)
 			output, err := conn.Subscribe(ctx, &SubscribeInput{
-				Queue:    name,
+				Queue: name,
 			})
 			if err != nil {
 				return err
@@ -252,36 +252,34 @@ func (sw *subWorker) work(jobs <-chan *Job) {
 
 func (jw *JobWorker) workSafely(ctx context.Context, job *Job) {
 
-	connName := job.ConnName()
-	queue := job.QueueName()
-	payload := job.Payload()
+	connName := job.Conn.Name()
 
-	jw.debug("start work safely:", connName, queue, payload.Content)
+	jw.debug("start work safely:", connName, job.QueueName, job.Content)
 
 	jw.trackJob(job, true)
 	defer jw.trackJob(job, false)
 
-	w, ok := jw.queue2worker[queue]
+	w, ok := jw.queue2worker[job.QueueName]
 	if !ok {
-		jw.debug("could not found queueName:", queue)
+		jw.debug("could not found queueName:", job.QueueName)
 		return
 	}
 
 	if err := w.Work(job); err != nil {
 		if err = failJob(ctx, job); err != nil {
 			jw.debug("mark dead connector, because error occurred during job fail:",
-				connName, queue, payload.Content, err)
-			jw.connProvider.MarkDead(job.conn)
+				connName, job.QueueName, job.Content, err)
+			jw.connProvider.MarkDead(job.Conn)
 		}
 		return
 	}
 	if err := completeJob(ctx, job); err != nil {
 		jw.debug("mark dead connector, because error occurred during job complete:",
-			connName, queue, payload.Content, err)
-		jw.connProvider.MarkDead(job.conn)
+			connName, job.QueueName, job.Content, err)
+		jw.connProvider.MarkDead(job.Conn)
 		return
 	}
-	jw.debug("success work safely:", connName, queue, payload.Content)
+	jw.debug("success work safely:", connName, job.QueueName, job.Content)
 }
 
 func (jw *JobWorker) RegisterOnShutdown(f func()) {
@@ -405,7 +403,7 @@ func completeJob(ctx context.Context, job *Job) error {
 	if job.IsFinished() {
 		return nil
 	}
-	_, err := job.conn.CompleteJob(ctx, &CompleteJobInput{Job: job})
+	_, err := job.Conn.CompleteJob(ctx, &CompleteJobInput{Job: job})
 	if err != nil {
 		return err
 	}
@@ -417,7 +415,7 @@ func failJob(ctx context.Context, job *Job) error {
 	if job.IsFinished() {
 		return nil
 	}
-	_, err := job.conn.FailJob(ctx, &FailJobInput{Job: job})
+	_, err := job.Conn.FailJob(ctx, &FailJobInput{Job: job})
 	if err != nil {
 		return err
 	}
