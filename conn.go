@@ -58,7 +58,7 @@ type SubscribeOutput struct {
 
 type EnqueueInput struct {
 	Queue           string
-	Payload         string
+	Content         string
 	Metadata        map[string]string
 	CustomAttribute map[string]*CustomAttribute
 }
