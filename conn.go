@@ -48,8 +48,8 @@ type Subscription interface {
 }
 
 type SubscribeInput struct {
-	Queue             string
-	ReceivingInterval int64 // Sec
+	Queue    string
+	Metadata map[string]string
 }
 
 type SubscribeOutput struct {

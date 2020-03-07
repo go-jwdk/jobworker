@@ -127,7 +127,7 @@ func (w *defaultWorker) Work(job *Job) error {
 }
 
 type Option struct {
-	receivingInterval int64
+	SubscribeMetadata map[string]string
 }
 
 type OptionFunc func(*Option)
@@ -138,10 +138,13 @@ func (o *Option) ApplyOptions(opts ...OptionFunc) {
 	}
 }
 
-// ReceivingInterval is job receiving interval (seconds)
-func ReceivingInterval(i int64) OptionFunc {
+// SubscribeMetadata is metadata of subscribe func
+func SubscribeMetadata(k, v string) OptionFunc {
 	return func(opt *Option) {
-		opt.receivingInterval = i
+		if opt.SubscribeMetadata == nil {
+			opt.SubscribeMetadata = make(map[string]string)
+		}
+		opt.SubscribeMetadata[k] = v
 	}
 }
 
@@ -220,8 +223,8 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 		for name, w := range jw.queue2worker {
 			ctx := context.Background()
 			output, err := conn.Subscribe(ctx, &SubscribeInput{
-				Queue:             name,
-				ReceivingInterval: w.opt.receivingInterval,
+				Queue:    name,
+				Metadata: w.opt.SubscribeMetadata,
 			})
 			if err != nil {
 				return err
