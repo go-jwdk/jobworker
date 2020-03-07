@@ -43,78 +43,69 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-jwdk/jobworker"
-	_ "github.com/go-jwdk/awa-sqs-connector/sqs"
+	_ "github.com/go-jwdk/aws-sqs-connector"
+	jw "github.com/go-jwdk/jobworker"
 )
 
 func main() {
-	sqs, err := jobworker.Open("sqs", map[string]interface{}{
+	sqs, err := jw.Open("sqs", map[string]interface{}{
 		"Region":          os.Getenv("REGION"),
-		"AccessKeyID":     os.Getenv("ACCESS_KEY_ID"),
-		"SecretAccessKey": os.Getenv("SECRET_ACCESS_KEY"),
+		"NumMaxRetries":   3,
 	})
 	if err != nil {
-		panic("could not open sqs connector")
+		log.Println("Could not open a sqs conn", err)
+		return
 	}
-	sqs.SetLogger(logger)
-
-	jw, err := jobworker.New(&jobworker.Setting{
-		DeadConnectorRetryInterval: 10,
-		Primary:                    sqs,
-		Logger:                     logger,
+	sqs.SetLoggerFunc(log.Println)
+	worker, err := jw.New(&jw.Setting{
+		Primary:    sqs,
+		LoggerFunc: log.Println,
 	})
 	if err != nil {
-		panic(err)
+		log.Println("Could not create a job worker", err)
+		return
 	}
-
-	jw.Register("hello", &HelloWorker{})
+	worker.Register("test", &HelloWorker{},
+		jw.SubscribeMetadata("PollingInterval", "3"),
+		jw.SubscribeMetadata("VisibilityTimeout", "20"),
+		jw.SubscribeMetadata("WaitTimeSeconds", "10"),
+		jw.SubscribeMetadata("MaxNumberOfJobs", "4"))
 
 	go func() {
-		if err := jw.Work(&jobworker.WorkSetting{
-			WorkerConcurrency: 1,
-			Queue2PollingInterval: map[string]int64{
-				"test.fifo": 2,
-			},
-		}); err != nil {
-			log.Println(err)
+		log.Println("Start work")
+		err := worker.Work(&jw.WorkSetting{
+			WorkerConcurrency: 5,
+		})
+		if err != nil {
+			log.Println("Failed to work", err)
+			return
 		}
 	}()
 
-	sigint := make(chan os.Signal, 1)
-	signal.Notify(sigint, os.Interrupt, syscall.SIGTERM)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
-	<-sigint
+	<-quit
 
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, time.Second*30)
+	defer cancel()
 	log.Println("Received a signal of graceful shutdown")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-	defer cancel()
-
-	if err := jw.Shutdown(ctx); err != nil {
-		log.Printf("Failed to graceful shutdown: %v\n", err)
+	if err := worker.Shutdown(ctx); err != nil {
+		log.Println("Failed to graceful shutdown:", err)
 	}
 
 	log.Println("Completed graceful shutdown")
-
 }
 
 type HelloWorker struct {
 }
 
-func (HelloWorker) Work(job *jobworker.Job) error {
-	time.Sleep(time.Second)
-	log.Println("[HelloWorker]", job.Args)
+func (HelloWorker) Work(job *jw.Job) error {
+	log.Println("[HelloWorker]", job.Content)
 	return nil
 }
-
-type Logger struct {
-}
-
-func (l *Logger) Debug(v ...interface{}) {
-	log.Println(v...)
-}
-
-var logger = &Logger{}
 ```
 
 ### Enqueue/EnqueueBatch
@@ -122,26 +113,34 @@ var logger = &Logger{}
 Implements job enqueue.
 
 ```go
-sqs, err := jobworker.Open("sqs", map[string]interface{}{
-    "Region":          os.Getenv("REGION"),
-    "AccessKeyID":     os.Getenv("ACCESS_KEY_ID"),
-    "SecretAccessKey": os.Getenv("SECRET_ACCESS_KEY"),
+sqs, err := jw.Open("sqs", map[string]interface{}{
+	"Region":          os.Getenv("REGION"),
+	"NumMaxRetries":   3,
 })
+if err != nil {
+	log.Println("Could not open a sqs conn", err)
+	return
+}
+sqs.SetLoggerFunc(log.Println)
+worker, err := jw.New(&jw.Setting{
+	Primary:    sqs,
+	LoggerFunc: log.Println,
+})
+if err != nil {
+	log.Println("Could not create a job worker", err)
+	return
+}
 
-jw, err := jobworker.New(&jobworker.Setting{
-    DeadConnectorRetryInterval: 10,
-    Primary:                    sqs,
-    Logger:                     logger,
+_, err := worker.Enqueue(context.Background(), &jw.EnqueueInput{
+	Queue:   "test",
+	Content: fmt.Sprintf(`{"msg":"%s"}`, uuid.NewV4().String()),
+	Metadata: map[string]string{
+		"MessageDelaySeconds": "3",
+	},
 })
-
-err := jw.EnqueueJob(context.Background(), &jobworker.EnqueueJobInput{
-    Queue: "test_queue",
-    Payload: &jobworker.Payload{
-        Class:        "hello",
-        Args:         fmt.Sprintf(`{"msg":"%s"}`, "Hello Go JWDK!"),
-        DelaySeconds: 3,
-    },
-})
+if err != nil {
+	log.Println("Failed to enqueue", err)
+}
 ```
 
 ### Primary/Secondary
@@ -153,29 +152,25 @@ Set up primary and secondary connectors.
 
 ```go
 import (
-    "github.com/go-jwdk/jobworker"
-    _ "github.com/go-jwdk/awa-sqs-connector/sqs"
-    _ "github.com/go-jwdk/db-connector/mysql"
+	jw "github.com/go-jwdk/jobworker"
+	_ "github.com/go-jwdk/awa-sqs-connector"
+	_ "github.com/go-jwdk/db-connector/mysql"
 )
 
 sqs, err := jobworker.Open("sqs", map[string]interface{}{
-    "Region":          os.Getenv("REGION"),
-    "AccessKeyID":     os.Getenv("ACCESS_KEY_ID"),
-    "SecretAccessKey": os.Getenv("SECRET_ACCESS_KEY"),
+	"Region": os.Getenv("REGION"),
 })
 
 mysql, err := jobworker.Open("mysql", map[string]interface{}{
-    "DSN":             "test-db",
-    "MaxOpenConns":    3,
-    "MaxMaxIdleConns": 3,
-    "ConnMaxLifetime": time.Minute,
-    "NumMaxRetries":   3,
+	"DSN":             "test-db",
+	"MaxOpenConns":    3,
+	"MaxMaxIdleConns": 3,
+	"ConnMaxLifetime": time.Minute,
+	"NumMaxRetries":   3,
 })
 
-jw, err := jobworker.New(&jobworker.Setting{
-    DeadConnectorRetryInterval: 10,
-    Primary:                    sqs,
-    Secondary:                  mysql,
-    Logger:                     logger,
+jw, err := jw.New(&jw.Setting{
+    Primary:   sqs,
+    Secondary: mysql,
 })
 ```
