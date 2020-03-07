@@ -127,7 +127,7 @@ func (w *defaultWorker) Work(job *Job) error {
 }
 
 type Option struct {
-	pollingInterval int64
+	receivingInterval int64
 }
 
 type OptionFunc func(*Option)
@@ -138,10 +138,10 @@ func (o *Option) ApplyOptions(opts ...OptionFunc) {
 	}
 }
 
-// PollingInterval is polling interval (seconds)
-func PollingInterval(i int64) OptionFunc {
+// ReceivingInterval is job receiving interval (seconds)
+func ReceivingInterval(i int64) OptionFunc {
 	return func(opt *Option) {
-		opt.pollingInterval = i
+		opt.receivingInterval = i
 	}
 }
 
@@ -174,7 +174,7 @@ type workerWithOption struct {
 }
 
 type WorkSetting struct {
-	HeartbeatInterval int64
+	HeartbeatInterval int64 // Sec
 	OnHeartBeat       func(job *Job)
 	WorkerConcurrency int
 }
@@ -219,10 +219,9 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 		for name, w := range jw.queue2worker {
 			ctx := context.Background()
-			metadata := make(map[string]string)
-			metadata["PollingInterval"] = strconv.FormatInt(w.opt.pollingInterval, 10)
 			output, err := conn.Subscribe(ctx, &SubscribeInput{
-				Queue: name,
+				Queue:             name,
+				ReceivingInterval: w.opt.receivingInterval,
 			})
 			if err != nil {
 				return err
