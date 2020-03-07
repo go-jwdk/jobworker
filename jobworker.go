@@ -230,6 +230,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 				return err
 			}
 			b.Register(func() {
+				jw.debug("unsubscribe:", name)
 				err := output.Subscription.UnSubscribe()
 				if err != nil {
 					jw.debug("an error occurred during unsubscribe:", name, err)
@@ -241,6 +242,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 					trackedJobCh <- job
 					jw.trackJob(job, true)
 				}
+				jw.debug("Completed unsubscribe")
 			}(output.Subscription)
 		}
 	}
@@ -279,7 +281,6 @@ func (jw *JobWorker) workSafely(ctx context.Context, job *Job) {
 
 	jw.debug("start work safely:", connName, job.QueueName, job.Content)
 
-	jw.trackJob(job, true)
 	defer jw.trackJob(job, false)
 
 	w, ok := jw.queue2worker[job.QueueName]
