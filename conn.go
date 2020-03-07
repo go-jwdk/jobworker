@@ -41,14 +41,6 @@ func Open(driverName string, attrs map[string]interface{}) (Connector, error) {
 	return driveri.Open(attrs)
 }
 
-type Option struct{}
-
-func (o *Option) ApplyOptions(opts ...func(*Option)) {
-	for _, opt := range opts {
-		opt(o)
-	}
-}
-
 type Subscription interface {
 	Active() bool
 	Queue() chan *Job

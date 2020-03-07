@@ -44,7 +44,7 @@ func New(s *Setting) (*JobWorker, error) {
 type JobWorker struct {
 	connProvider ConnectorProvider
 
-	queue2worker map[string]Worker
+	queue2worker map[string]*workerWithOption
 
 	loggerFunc LoggerFunc
 
@@ -126,26 +126,57 @@ func (w *defaultWorker) Work(job *Job) error {
 	return w.workFunc(job)
 }
 
-func (jw *JobWorker) RegisterFunc(queue string, f WorkerFunc) {
-	jw.Register(queue, &defaultWorker{
-		workFunc: f,
-	})
+type Option struct {
+	pollingInterval int64
 }
 
-func (jw *JobWorker) Register(queue string, worker Worker) {
+type OptionFunc func(*Option)
+
+func (o *Option) ApplyOptions(opts ...OptionFunc) {
+	for _, opt := range opts {
+		opt(o)
+	}
+}
+
+// PollingInterval is polling interval (seconds)
+func PollingInterval(i int64) OptionFunc {
+	return func(opt *Option) {
+		opt.pollingInterval = i
+	}
+}
+
+func (jw *JobWorker) RegisterFunc(queue string, f WorkerFunc, opts ...OptionFunc) {
+	jw.Register(queue, &defaultWorker{
+		workFunc: f,
+	}, opts...)
+}
+
+func (jw *JobWorker) Register(queue string, worker Worker, opts ...OptionFunc) {
+
+	var opt Option
+	opt.ApplyOptions(opts...)
+
 	jw.mu.Lock()
 	defer jw.mu.Unlock()
 	if jw.queue2worker == nil {
-		jw.queue2worker = make(map[string]Worker)
+		jw.queue2worker = make(map[string]*workerWithOption)
 	}
-	jw.queue2worker[queue] = worker
+
+	jw.queue2worker[queue] = &workerWithOption{
+		worker: worker,
+		opt:    &opt,
+	}
+}
+
+type workerWithOption struct {
+	worker Worker
+	opt    *Option
 }
 
 type WorkSetting struct {
-	HeartbeatInterval     int64
-	OnHeartBeat           func(job *Job)
-	WorkerConcurrency     int
-	Queue2PollingInterval map[string]int64 // key: queueName name, value; polling interval (seconds)
+	HeartbeatInterval int64
+	OnHeartBeat       func(job *Job)
+	WorkerConcurrency int
 }
 
 const (
@@ -156,14 +187,10 @@ func (s *WorkSetting) setDefaults() {
 	if s.WorkerConcurrency == 0 {
 		s.WorkerConcurrency = workerConcurrencyDefault
 	}
-	if s.Queue2PollingInterval == nil {
-		s.Queue2PollingInterval = make(map[string]int64)
-	}
 }
 
 var (
-	ErrAlreadyStarted        = errors.New("already started")
-	ErrQueueSettingsRequired = errors.New("queue settings required")
+	ErrAlreadyStarted = errors.New("already started")
 )
 
 func (jw *JobWorker) Work(s *WorkSetting) error {
@@ -174,10 +201,6 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 	atomic.StoreInt32(&jw.started, 1)
 
 	s.setDefaults()
-
-	if len(s.Queue2PollingInterval) == 0 {
-		return ErrQueueSettingsRequired
-	}
 
 	if s.HeartbeatInterval > 0 && s.OnHeartBeat != nil {
 		interval := time.Duration(s.HeartbeatInterval) * time.Second
@@ -194,10 +217,10 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 
 	trackedJobCh := make(chan *Job)
 	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
-		for name, interval := range s.Queue2PollingInterval {
+		for name, w := range jw.queue2worker {
 			ctx := context.Background()
 			metadata := make(map[string]string)
-			metadata["PollingInterval"] = strconv.FormatInt(interval, 10)
+			metadata["PollingInterval"] = strconv.FormatInt(w.opt.pollingInterval, 10)
 			output, err := conn.Subscribe(ctx, &SubscribeInput{
 				Queue: name,
 			})
@@ -263,7 +286,7 @@ func (jw *JobWorker) workSafely(ctx context.Context, job *Job) {
 		return
 	}
 
-	if err := w.Work(job); err != nil {
+	if err := w.worker.Work(job); err != nil {
 		if err = failJob(ctx, job); err != nil {
 			jw.debug("mark dead connector, because error occurred during job fail:",
 				connName, job.QueueName, job.Content, err)
