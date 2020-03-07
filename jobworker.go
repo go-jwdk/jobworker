@@ -61,8 +61,7 @@ type JobWorker struct {
 
 type LoggerFunc func(...interface{})
 
-func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) error {
-
+func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) (*EnqueueOutput, error) {
 	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
 		if jw.connProvider.IsDead(conn) {
@@ -75,19 +74,18 @@ func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) error {
 
 			if err == ErrJobDuplicationDetected {
 				jw.debug("skip enqueue a duplication job")
-				return nil
+				return nil, nil
 			}
 			jw.debug("mark dead connector, because could not enqueue job. priority:", priority, "err:", err)
 			jw.connProvider.MarkDead(conn)
 			continue
 		}
-		return nil
+		return &EnqueueOutput{}, nil
 	}
-
-	return errors.New("could not enqueue a job using all connector")
+	return nil, errors.New("could not enqueue a job using all connector")
 }
 
-func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) error {
+func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) (*EnqueueBatchOutput, error) {
 	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
 		if jw.connProvider.IsDead(conn) {
@@ -98,7 +96,7 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 		output, err := conn.EnqueueBatch(ctx, input)
 
 		if err == nil && output != nil && len(output.Failed) == 0 {
-			return nil
+			return output, nil
 		}
 
 		jw.debug("could not enqueue job batch. priority: ", priority)
@@ -111,7 +109,7 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 		}
 	}
 
-	return errors.New("could not enqueue batch some jobs using all connector")
+	return nil, errors.New("could not enqueue batch some jobs using all connector")
 }
 
 type WorkerFunc func(job *Job) error
