@@ -66,8 +66,13 @@ type EnqueueInput struct {
 type EnqueueOutput struct{}
 
 type EnqueueBatchInput struct {
-	Queue           string
-	Id2Content      map[string]string
+	Queue   string
+	Entries []*EnqueueBatchEntry
+}
+
+type EnqueueBatchEntry struct {
+	ID              string
+	Content         string
 	Metadata        map[string]string
 	CustomAttribute map[string]*CustomAttribute
 }

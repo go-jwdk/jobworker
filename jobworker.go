@@ -3,7 +3,9 @@ package jobworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +24,7 @@ type Setting struct {
 
 var (
 	ErrPrimaryConnIsRequired = errors.New("primary conn is required")
+	ErrDuplicateEntryID      = errors.New("duplicate entry id")
 )
 
 func New(s *Setting) (*JobWorker, error) {
@@ -86,6 +89,19 @@ func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) (*Enqueue
 }
 
 func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) (*EnqueueBatchOutput, error) {
+
+	entryCnt := len(input.Entries)
+
+	entrySet := make(map[string]struct{})
+	for _, entry := range input.Entries {
+		entrySet[entry.ID] = struct{}{}
+	}
+
+	if len(entrySet) < entryCnt {
+		return nil, ErrDuplicateEntryID
+	}
+
+	var errs multiError
 	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
 		if jw.connProvider.IsDead(conn) {
@@ -93,23 +109,46 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 			continue
 		}
 
-		output, err := conn.EnqueueBatch(ctx, input)
-
-		if err == nil && output != nil && len(output.Failed) == 0 {
-			return output, nil
+		var entries []*EnqueueBatchEntry
+		for _, entry := range input.Entries {
+			if _, ok := entrySet[entry.ID]; ok {
+				entries = append(entries, entry)
+			}
 		}
 
-		jw.debug("could not enqueue job batch. priority: ", priority)
+		output, err := conn.EnqueueBatch(ctx, &EnqueueBatchInput{
+			Queue:   input.Queue,
+			Entries: entries,
+		})
+
+		if err != nil {
+			jw.debug("could not batch enqueue job all. priority: ", priority, "error: ", err)
+			errs.Errors = append(errs.Errors, err)
+			continue
+		}
+
+		if len(output.Failed) == 0 {
+			break
+		}
+
+		jw.debug("could not batch enqueue some job. priority: ", priority)
 		jw.connProvider.MarkDead(conn)
 
-		if output != nil && len(output.Failed) > 0 {
-			for _, id := range output.Successful {
-				delete(input.Id2Content, id)
-			}
+		for _, id := range output.Successful {
+			delete(entrySet, id)
 		}
 	}
 
-	return nil, errors.New("could not enqueue batch some jobs using all connector")
+	var out EnqueueBatchOutput
+	for _, entry := range input.Entries {
+		if _, failed := entrySet[entry.ID]; failed {
+			out.Failed = append(out.Failed, entry.ID)
+		} else {
+			out.Successful = append(out.Successful, entry.ID)
+		}
+	}
+
+	return &out, errs.ErrorOrNil()
 }
 
 type WorkerFunc func(job *Job) error
@@ -445,4 +484,34 @@ func failJob(ctx context.Context, job *Job) error {
 	}
 	job.finished()
 	return nil
+}
+
+type multiError struct {
+	Errors []error
+}
+
+func (e *multiError) Error() string {
+	if len(e.Errors) == 1 {
+		return fmt.Sprintf("1 error occurred:\n\t* %s\n\n", e.Errors[0])
+	}
+
+	points := make([]string, len(e.Errors))
+	for i, err := range e.Errors {
+		points[i] = fmt.Sprintf("* %s", err)
+	}
+
+	return fmt.Sprintf(
+		"%d errors occurred:\n\t%s\n\n",
+		len(e.Errors), strings.Join(points, "\n\t"))
+}
+
+func (e *multiError) ErrorOrNil() error {
+	if e == nil {
+		return nil
+	}
+	if len(e.Errors) == 0 {
+		return nil
+	}
+
+	return e
 }
