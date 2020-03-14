@@ -1,6 +1,6 @@
-# jobworker
+# jobworker ![](https://github.com/go-jwdk/jobworker/workflows/Go/badge.svg)
 
-## DESCRIPTION
+## Description
 
 Package jobworker provides a generic interface around message queue.
 
