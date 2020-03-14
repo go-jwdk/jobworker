@@ -53,13 +53,13 @@ type JobWorker struct {
 
 	started int32
 
-	inShutdown    int32
-	mu            sync.Mutex
-	activeJob     map[*Job]struct{}
-	activeJobWg   sync.WaitGroup
-	doneChan      chan struct{}
-	cardiacArrest chan struct{}
-	onShutdown    []func()
+	inShutdown  int32
+	mu          sync.Mutex
+	activeJob   map[*Job]struct{}
+	activeJobWg sync.WaitGroup
+	doneChan    chan struct{}
+	heartBeat   internal.HeartBeat
+	onShutdown  []func()
 }
 
 type LoggerFunc func(...interface{})
@@ -244,18 +244,19 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 
 	s.setDefaults()
 
-	if s.HeartbeatInterval > 0 && s.OnHeartBeat != nil {
-		interval := time.Duration(s.HeartbeatInterval) * time.Second
-		jw.startHeartbeat(interval, s.OnHeartBeat)
-	}
-
 	var b internal.Broadcaster
 	go func() {
 		<-jw.getDoneChan()
 		b.Broadcast()
 	}()
 
-	b.Register(jw.stopHeartbeat)
+	if s.HeartbeatInterval > 0 && s.OnHeartBeat != nil {
+		interval := time.Duration(s.HeartbeatInterval) * time.Second
+		_ = jw.heartBeat.Start(interval, jw.newActiveJobHandler(s.OnHeartBeat))
+		b.Register(func() {
+			_ = jw.heartBeat.Stop()
+		})
+	}
 
 	trackedJobCh := make(chan *Job)
 	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
@@ -388,36 +389,20 @@ func (jw *JobWorker) verbose() bool {
 	return jw.loggerFunc != nil
 }
 
-func (jw *JobWorker) startHeartbeat(interval time.Duration, f func(job *Job)) {
-	jw.debug("start heart beat - interval:", interval)
-	go func() {
-		for {
-			select {
-			case <-jw.cardiacArrest:
-				return
-			default:
-				var jobs []*Job
-				jw.mu.Lock()
-				for v := range jw.activeJob {
-					jobs = append(jobs, v)
-				}
-				jw.mu.Unlock()
-
-				go func(jobs []*Job) {
-					for _, job := range jobs {
-						f(job)
-					}
-				}(jobs)
-
-			}
-			time.Sleep(interval)
+func (jw *JobWorker) newActiveJobHandler(handler func(job *Job)) func() {
+	return func() {
+		var jobs []*Job
+		jw.mu.Lock()
+		for v := range jw.activeJob {
+			jobs = append(jobs, v)
 		}
-	}()
-}
-
-func (jw *JobWorker) stopHeartbeat() {
-	jw.debug("stop heart beat")
-	jw.cardiacArrest <- struct{}{}
+		jw.mu.Unlock()
+		go func(jobs []*Job) {
+			for _, job := range jobs {
+				handler(job)
+			}
+		}(jobs)
+	}
 }
 
 func (jw *JobWorker) shuttingDown() bool {

@@ -71,15 +71,15 @@ type EnqueueBatchInput struct {
 }
 
 type EnqueueBatchEntry struct {
-	ID              string
+	ID              string // Uniq ID
 	Content         string
 	Metadata        map[string]string
 	CustomAttribute map[string]*CustomAttribute
 }
 
 type EnqueueBatchOutput struct {
-	Failed     []string // ID
-	Successful []string // ID
+	Failed     []string // Uniq ID
+	Successful []string // Uniq ID
 }
 
 type CompleteJobInput struct {
