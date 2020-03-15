@@ -17,6 +17,7 @@ var (
 	name2Driver = make(map[string]Driver)
 
 	ErrJobDuplicationDetected = fmt.Errorf("job duplication detected")
+	ErrNoActiveConn           = fmt.Errorf("no active conn")
 )
 
 func Register(name string, driver Driver) {
@@ -127,7 +128,7 @@ func (p *ConnectorProvider) Register(priority int, conn Connector) {
 	p.mu.Unlock()
 }
 
-func (p *ConnectorProvider) GetConnectorsInPriorityOrder() []Connector {
+func (p *ConnectorProvider) GetConnsInPriorityOrder() []Connector {
 	keys := make([]int, 0, len(p.priority2Conn))
 
 	p.mu.Lock()
@@ -141,6 +142,29 @@ func (p *ConnectorProvider) GetConnectorsInPriorityOrder() []Connector {
 	var sorted []Connector
 	for _, k := range keys {
 		sorted = append(sorted, p.priority2Conn[k])
+	}
+
+	return sorted
+}
+
+func (p *ConnectorProvider) GetActiveConnsInPriorityOrder() []Connector {
+	keys := make([]int, 0, len(p.priority2Conn))
+
+	p.mu.Lock()
+	for k := range p.priority2Conn {
+		keys = append(keys, k)
+	}
+	p.mu.Unlock()
+
+	sort.Ints(keys)
+
+	var sorted []Connector
+	for _, k := range keys {
+		conn := p.priority2Conn[k]
+		if p.IsDead(conn) {
+			continue
+		}
+		sorted = append(sorted, conn)
 	}
 
 	return sorted

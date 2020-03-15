@@ -3,9 +3,7 @@ package jobworker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,33 +63,46 @@ type JobWorker struct {
 type LoggerFunc func(...interface{})
 
 func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) (*EnqueueOutput, error) {
-	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
 
-		if jw.connProvider.IsDead(conn) {
-			jw.debug("connector is dead. priority: ", priority)
-			continue
-		}
-
-		_, err := conn.Enqueue(ctx, input)
-		if err != nil {
-
-			if err == ErrJobDuplicationDetected {
-				jw.debug("skip enqueue a duplication job")
-				return nil, nil
-			}
-			jw.debug("mark dead connector, because could not enqueue job. priority:", priority, "err:", err)
-			jw.connProvider.MarkDead(conn)
-			continue
-		}
-		return &EnqueueOutput{}, nil
+	conns := jw.connProvider.GetActiveConnsInPriorityOrder()
+	if len(conns) == 0 {
+		return nil, ErrNoActiveConn
 	}
-	return nil, errors.New("could not enqueue a job using all connector")
+
+	var errs internal.MultiError
+	for priority, conn := range conns {
+		_, err := conn.Enqueue(ctx, input)
+		if err == nil {
+			// success
+			break
+		}
+		if err == ErrJobDuplicationDetected {
+			// success
+			jw.debug("skip enqueue a duplication job")
+			break
+		}
+
+		// fail
+		jw.debug("could not enqueue job. priority:", priority+1, "err:", err)
+		jw.connProvider.MarkDead(conn)
+		errs.Errors = append(errs.Errors, err)
+	}
+
+	err := errs.ErrorOrNil()
+	if err != nil {
+		return nil, err
+	}
+	return &EnqueueOutput{}, nil
 }
 
 func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) (*EnqueueBatchOutput, error) {
 
-	entryCnt := len(input.Entries)
+	conns := jw.connProvider.GetActiveConnsInPriorityOrder()
+	if len(conns) == 0 {
+		return nil, ErrNoActiveConn
+	}
 
+	entryCnt := len(input.Entries)
 	entrySet := make(map[string]struct{})
 	for _, entry := range input.Entries {
 		entrySet[entry.ID] = struct{}{}
@@ -101,13 +112,8 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 		return nil, ErrDuplicateEntryID
 	}
 
-	var errs multiError
-	for priority, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
-
-		if jw.connProvider.IsDead(conn) {
-			jw.debug("connector is dead. priority: ", priority)
-			continue
-		}
+	var errs internal.MultiError
+	for priority, conn := range conns {
 
 		var entries []*EnqueueBatchEntry
 		for _, entry := range input.Entries {
@@ -121,18 +127,17 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 			Entries: entries,
 		})
 
-		if err != nil {
-			jw.debug("could not batch enqueue job all. priority: ", priority, "error: ", err)
-			errs.Errors = append(errs.Errors, err)
-			continue
-		}
-
-		if len(output.Failed) == 0 {
+		if err == nil && len(output.Failed) == 0 {
+			// success
 			break
 		}
 
-		jw.debug("could not batch enqueue some job. priority: ", priority)
-		jw.connProvider.MarkDead(conn)
+		if err != nil {
+			jw.debug("could not batch enqueue job all. priority: ", priority+1, "error: ", err)
+			errs.Errors = append(errs.Errors, err)
+			jw.connProvider.MarkDead(conn)
+			continue
+		}
 
 		for _, id := range output.Successful {
 			delete(entrySet, id)
@@ -149,42 +154,6 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 	}
 
 	return &out, errs.ErrorOrNil()
-}
-
-type WorkerFunc func(job *Job) error
-
-type Worker interface {
-	Work(*Job) error
-}
-
-type defaultWorker struct {
-	workFunc func(*Job) error
-}
-
-func (w *defaultWorker) Work(job *Job) error {
-	return w.workFunc(job)
-}
-
-type Option struct {
-	SubscribeMetadata map[string]string
-}
-
-type OptionFunc func(*Option)
-
-func (o *Option) ApplyOptions(opts ...OptionFunc) {
-	for _, opt := range opts {
-		opt(o)
-	}
-}
-
-// SubscribeMetadata is metadata of subscribe func
-func SubscribeMetadata(k, v string) OptionFunc {
-	return func(opt *Option) {
-		if opt.SubscribeMetadata == nil {
-			opt.SubscribeMetadata = make(map[string]string)
-		}
-		opt.SubscribeMetadata[k] = v
-	}
 }
 
 func (jw *JobWorker) RegisterFunc(queue string, f WorkerFunc, opts ...OptionFunc) {
@@ -210,20 +179,15 @@ func (jw *JobWorker) Register(queue string, worker Worker, opts ...OptionFunc) {
 	}
 }
 
-type workerWithOption struct {
-	worker Worker
-	opt    *Option
-}
+const (
+	workerConcurrencyDefault = 1
+)
 
 type WorkSetting struct {
 	HeartbeatInterval int64 // Sec
 	OnHeartBeat       func(job *Job)
 	WorkerConcurrency int
 }
-
-const (
-	workerConcurrencyDefault = 1
-)
 
 func (s *WorkSetting) setDefaults() {
 	if s.WorkerConcurrency == 0 {
@@ -252,14 +216,15 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 
 	if s.HeartbeatInterval > 0 && s.OnHeartBeat != nil {
 		interval := time.Duration(s.HeartbeatInterval) * time.Second
-		_ = jw.heartBeat.Start(interval, jw.newActiveJobHandler(s.OnHeartBeat))
+		_ = jw.heartBeat.Start(interval,
+			jw.newActiveJobHandlerFunc(s.OnHeartBeat))
 		b.Register(func() {
 			_ = jw.heartBeat.Stop()
 		})
 	}
 
-	trackedJobCh := make(chan *Job)
-	for _, conn := range jw.connProvider.GetConnectorsInPriorityOrder() {
+	jobCh := make(chan *Job)
+	for _, conn := range jw.connProvider.GetConnsInPriorityOrder() {
 		for name, w := range jw.queue2worker {
 			ctx := context.Background()
 			output, err := conn.Subscribe(ctx, &SubscribeInput{
@@ -279,8 +244,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 
 			go func(sub Subscription) {
 				for job := range sub.Queue() {
-					trackedJobCh <- job
-					jw.trackJob(job, true)
+					jobCh <- job
 				}
 				jw.debug("Completed unsubscribe")
 			}(output.Subscription)
@@ -292,36 +256,23 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 		wg.Add(1)
 		go func(id int) {
 			sw := subWorker{id: strconv.Itoa(id), JobWorker: jw}
-			sw.work(trackedJobCh)
+			sw.work(jobCh)
 			wg.Done()
 		}(i)
 	}
 
 	wg.Wait()
-	close(trackedJobCh)
+	close(jobCh)
 
 	return nil
 
 }
 
-type subWorker struct {
-	id string
-	*JobWorker
-}
-
-func (sw *subWorker) work(jobs <-chan *Job) {
-	for job := range jobs {
-		sw.workSafely(context.Background(), job)
-	}
-}
-
-func (jw *JobWorker) workSafely(ctx context.Context, job *Job) {
+func (jw *JobWorker) WorkOnceSafely(ctx context.Context, job *Job) {
 
 	connName := job.Conn.Name()
 
 	jw.debug("start work safely:", connName, job.QueueName, job.Content)
-
-	defer jw.trackJob(job, false)
 
 	w, ok := jw.queue2worker[job.QueueName]
 	if !ok {
@@ -389,7 +340,7 @@ func (jw *JobWorker) verbose() bool {
 	return jw.loggerFunc != nil
 }
 
-func (jw *JobWorker) newActiveJobHandler(handler func(job *Job)) func() {
+func (jw *JobWorker) newActiveJobHandlerFunc(handler func(job *Job)) func() {
 	return func() {
 		var jobs []*Job
 		jw.mu.Lock()
@@ -469,34 +420,4 @@ func failJob(ctx context.Context, job *Job) error {
 	}
 	job.finished()
 	return nil
-}
-
-type multiError struct {
-	Errors []error
-}
-
-func (e *multiError) Error() string {
-	if len(e.Errors) == 1 {
-		return fmt.Sprintf("1 error occurred:\n\t* %s\n\n", e.Errors[0])
-	}
-
-	points := make([]string, len(e.Errors))
-	for i, err := range e.Errors {
-		points[i] = fmt.Sprintf("* %s", err)
-	}
-
-	return fmt.Sprintf(
-		"%d errors occurred:\n\t%s\n\n",
-		len(e.Errors), strings.Join(points, "\n\t"))
-}
-
-func (e *multiError) ErrorOrNil() error {
-	if e == nil {
-		return nil
-	}
-	if len(e.Errors) == 0 {
-		return nil
-	}
-
-	return e
 }
