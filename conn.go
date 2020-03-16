@@ -1,3 +1,4 @@
+//go:generate smock --type=Connector --output=.
 package jobworker
 
 import (

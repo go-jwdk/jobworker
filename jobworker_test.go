@@ -1,0 +1,62 @@
+package jobworker
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+func Test_completeJob(t *testing.T) {
+	type args struct {
+		ctx context.Context
+		job *Job
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr bool
+	}{
+		{
+			name: "normal case",
+			args: args{
+				ctx: context.Background(),
+				job: &Job{
+					Conn: &ConnectorMock{
+						CompleteJobFunc: func(ctx context.Context, input *CompleteJobInput) (output *CompleteJobOutput, e error) {
+							return &CompleteJobOutput{}, nil
+						},
+					},
+					QueueName:    "Foo",
+					didSomething: 0,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "error case",
+			args: args{
+				ctx: context.Background(),
+				job: &Job{
+					Conn: &ConnectorMock{
+						CompleteJobFunc: func(ctx context.Context, input *CompleteJobInput) (output *CompleteJobOutput, e error) {
+							return nil, errors.New("mock error")
+						},
+					},
+					QueueName:    "Foo",
+					didSomething: 0,
+				},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := completeJob(tt.args.ctx, tt.args.job); (err != nil) != tt.wantErr {
+				t.Errorf("completeJob() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if ok := tt.args.job.IsFinished(); ok != !tt.wantErr {
+				t.Errorf("IsFinished() result = %v, wantErr %v", ok, !tt.wantErr)
+			}
+		})
+	}
+}
