@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func Test_completeJob(t *testing.T) {
@@ -135,5 +136,26 @@ func Test_failJob(t *testing.T) {
 				t.Errorf("IsFinished() result = %v, wantErr %v", ok, !tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestJobWorker_newActiveJobHandlerFunc(t *testing.T) {
+	jw := &JobWorker{
+		activeJob: make(map[*Job]struct{}),
+	}
+	jw.activeJob[&Job{}] = struct{}{}
+	jw.activeJob[&Job{}] = struct{}{}
+	jw.activeJob[&Job{}] = struct{}{}
+
+	var cnt int
+	jw.newActiveJobHandlerFunc(func(job *Job) {
+		cnt++
+		if _, ok := jw.activeJob[job]; !ok {
+			t.Errorf("JobWorker.newActiveJobHandlerFunc() unknown job")
+		}
+	})()
+	time.Sleep(time.Second / 2)
+	if cnt != 3 {
+		t.Errorf("JobWorker.newActiveJobHandlerFunc() cnt = %v, want %v", cnt, 3)
 	}
 }
