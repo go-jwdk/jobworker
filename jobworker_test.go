@@ -324,3 +324,99 @@ func TestJobWorker_WorkOnceSafely(t *testing.T) {
 		})
 	}
 }
+
+func TestJobWorker_Work_Runs_Only_Once(t *testing.T) {
+	jw := &JobWorker{
+		queue2worker: make(map[string]*workerWithOption),
+	}
+	go func() {
+		jw.Work(&WorkSetting{})
+	}()
+	time.Sleep(time.Millisecond)
+	if err := jw.Work(&WorkSetting{}); err != ErrAlreadyStarted {
+		t.Errorf("JobWorker.Work() err=%v want=%v", err, ErrAlreadyStarted)
+	}
+}
+
+func TestJobWorker_Work(t *testing.T) {
+
+	newSub := func() Subscription {
+		queue := make(chan *Job)
+		sub := &SubscriptionMock{
+			ActiveFunc: func() bool {
+				return true
+			},
+			QueueFunc: func() chan *Job {
+				return queue
+			},
+			UnSubscribeFunc: func() error {
+				close(queue)
+				return nil
+			},
+		}
+		return sub
+	}
+
+	conn := &ConnectorMock{
+		NameFunc: func() string {
+			return "test"
+		},
+		SubscribeFunc: func(ctx context.Context, input *SubscribeInput) (output *SubscribeOutput, e error) {
+			return &SubscribeOutput{Subscription: newSub()}, nil
+		},
+		CompleteJobFunc: func(ctx context.Context, input *CompleteJobInput) (output *CompleteJobOutput, e error) {
+			return &CompleteJobOutput{}, nil
+		},
+		FailJobFunc: func(ctx context.Context, input *FailJobInput) (output *FailJobOutput, e error) {
+			return &FailJobOutput{}, nil
+		},
+		CloseFunc: func() error {
+			return nil
+		},
+	}
+
+	type fields struct {
+		queue2worker map[string]*workerWithOption
+	}
+	type args struct {
+		s *WorkSetting
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		wantErr bool
+	}{
+		{
+			name: "normal case",
+			fields: fields{
+				queue2worker: map[string]*workerWithOption{
+					"foo": {
+						worker: &defaultWorker{},
+						opt: &Option{
+							SubscribeMetadata: make(map[string]string),
+						},
+					},
+				},
+			},
+			args: args{
+				s: &WorkSetting{},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jw := &JobWorker{
+				queue2worker: tt.fields.queue2worker,
+			}
+			jw.connProvider.Register(1, conn)
+			go func() {
+				if err := jw.Work(tt.args.s); (err != nil) != tt.wantErr {
+					t.Errorf("JobWorker.Work() error = %v, wantErr %v", err, tt.wantErr)
+				}
+			}()
+			time.Sleep(time.Second)
+		})
+	}
+}

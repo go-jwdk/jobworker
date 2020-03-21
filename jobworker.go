@@ -263,6 +263,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 
 	wg.Wait()
 	close(jobCh)
+	jw.connProvider.Close()
 
 	return nil
 
