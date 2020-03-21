@@ -159,3 +159,168 @@ func TestJobWorker_newActiveJobHandlerFunc(t *testing.T) {
 		t.Errorf("JobWorker.newActiveJobHandlerFunc() cnt = %v, want %v", cnt, 3)
 	}
 }
+
+func TestJobWorker_WorkOnceSafely(t *testing.T) {
+
+	conn := &ConnectorMock{
+		NameFunc: func() string {
+			return "test"
+		},
+		CompleteJobFunc: func(ctx context.Context, input *CompleteJobInput) (output *CompleteJobOutput, e error) {
+			if input.Job.Content == "" {
+				return nil, errors.New("dummy")
+			}
+			return &CompleteJobOutput{}, nil
+		},
+		FailJobFunc: func(ctx context.Context, input *FailJobInput) (output *FailJobOutput, e error) {
+			if input.Job.Content == "" {
+				return nil, errors.New("dummy")
+			}
+			return &FailJobOutput{}, nil
+		},
+	}
+
+	type fields struct {
+		queue2worker map[string]*workerWithOption
+		conn         Connector
+		loggerFunc   LoggerFunc
+	}
+	type args struct {
+		job *Job
+	}
+	tests := []struct {
+		name        string
+		fields      fields
+		args        args
+		wantConnDie bool
+	}{
+		{
+			name: "not found worker",
+			fields: fields{
+				queue2worker: map[string]*workerWithOption{},
+				conn:         conn,
+			},
+			args: args{
+				job: &Job{
+					Conn:      conn,
+					QueueName: "foo",
+					Content:   "hello",
+				},
+			},
+			wantConnDie: false,
+		},
+		{
+			name: "not found worker and fail is error",
+			fields: fields{
+				queue2worker: map[string]*workerWithOption{},
+				conn:         conn,
+			},
+			args: args{
+				job: &Job{
+					Conn:      conn,
+					QueueName: "foo",
+				},
+			},
+			wantConnDie: true,
+		},
+		{
+			name: "work is successful",
+			fields: fields{
+				queue2worker: map[string]*workerWithOption{
+					"foo": {
+						worker: &defaultWorker{},
+					},
+				},
+				conn: conn,
+			},
+			args: args{
+				job: &Job{
+					Conn:      conn,
+					QueueName: "foo",
+					Content:   "hello",
+				},
+			},
+			wantConnDie: false,
+		},
+		{
+			name: "work is successful and complete is error",
+			fields: fields{
+				queue2worker: map[string]*workerWithOption{
+					"foo": {
+						worker: &defaultWorker{},
+					},
+				},
+				conn: conn,
+			},
+			args: args{
+				job: &Job{
+					Conn:      conn,
+					QueueName: "foo",
+				},
+			},
+			wantConnDie: true,
+		},
+		{
+			name: "work is failed and fail is success",
+			fields: fields{
+				queue2worker: map[string]*workerWithOption{
+					"foo": {
+						worker: &defaultWorker{
+							func(job *Job) error {
+								return errors.New("dummy")
+							},
+						},
+					},
+				},
+				conn: conn,
+			},
+			args: args{
+				job: &Job{
+					Conn:      conn,
+					QueueName: "foo",
+					Content:   "hello",
+				},
+			},
+			wantConnDie: false,
+		},
+		{
+			name: "work is failed and fail is failed",
+			fields: fields{
+				queue2worker: map[string]*workerWithOption{
+					"foo": {
+						worker: &defaultWorker{
+							func(job *Job) error {
+								return errors.New("dummy")
+							},
+						},
+					},
+				},
+				conn: conn,
+			},
+			args: args{
+				job: &Job{
+					Conn:      conn,
+					QueueName: "foo",
+				},
+			},
+			wantConnDie: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jw := &JobWorker{
+				queue2worker: tt.fields.queue2worker,
+				loggerFunc:   tt.fields.loggerFunc,
+			}
+
+			jw.connProvider.SetRetrySeconds(time.Second)
+			jw.connProvider.Register(1, tt.fields.conn)
+
+			jw.WorkOnceSafely(context.Background(), tt.args.job)
+
+			if v := jw.connProvider.IsDead(tt.fields.conn); v != tt.wantConnDie {
+				t.Errorf("JobWorker.WorkOnceSafely() v=%v want=%v", v, tt.wantConnDie)
+			}
+		})
+	}
+}

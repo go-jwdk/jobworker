@@ -276,7 +276,12 @@ func (jw *JobWorker) WorkOnceSafely(ctx context.Context, job *Job) {
 
 	w, ok := jw.queue2worker[job.QueueName]
 	if !ok {
-		jw.debug("could not found queueName:", job.QueueName)
+		jw.debug("could not found worker. queue:", job.QueueName)
+		if err := failJob(ctx, job); err != nil {
+			jw.debug("mark dead connector, because error occurred during job fail:",
+				connName, job.QueueName, job.Content, err)
+			jw.connProvider.MarkDead(job.Conn)
+		}
 		return
 	}
 
@@ -406,7 +411,7 @@ func completeJob(ctx context.Context, job *Job) error {
 	if err != nil {
 		return err
 	}
-	job.finished()
+	job.finished() // TODO move each connector
 	return nil
 }
 
@@ -418,6 +423,6 @@ func failJob(ctx context.Context, job *Job) error {
 	if err != nil {
 		return err
 	}
-	job.finished()
+	job.finished() // TODO move each connector
 	return nil
 }

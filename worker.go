@@ -13,7 +13,10 @@ type defaultWorker struct {
 }
 
 func (w *defaultWorker) Work(job *Job) error {
-	return w.workFunc(job)
+	if w.workFunc != nil {
+		return w.workFunc(job)
+	}
+	return nil
 }
 
 type subWorker struct {
