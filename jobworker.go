@@ -121,15 +121,9 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 			Queue:   input.Queue,
 			Entries: entries,
 		})
-
-		if err == nil && len(output.Failed) == 0 {
-			// success
-			break
-		}
-
 		if err != nil {
 			jw.debug("could not batch enqueue job all. priority: ", priority+1, "error: ", err)
-			errs.Errors = append(errs.Errors, err)
+			errs.Append(err)
 			jw.connProvider.MarkDead(conn)
 			continue
 		}
@@ -137,6 +131,12 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 		for _, id := range output.Successful {
 			delete(entrySet, id)
 		}
+		if len(output.Failed) > 0 {
+			continue
+		}
+
+		// success
+		return output, nil
 	}
 
 	var out EnqueueBatchOutput

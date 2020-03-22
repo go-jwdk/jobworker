@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -466,9 +467,6 @@ func TestJobWorker_Enqueue(t *testing.T) {
 			}
 			return &EnqueueOutput{}, nil
 		},
-		EnqueueBatchFunc: func(ctx context.Context, input *EnqueueBatchInput) (output *EnqueueBatchOutput, e error) {
-			return &EnqueueBatchOutput{}, nil
-		},
 	}
 	conn2 := &ConnectorMock{
 		NameFunc: func() string {
@@ -476,9 +474,6 @@ func TestJobWorker_Enqueue(t *testing.T) {
 		},
 		EnqueueFunc: func(ctx context.Context, input *EnqueueInput) (output *EnqueueOutput, e error) {
 			return &EnqueueOutput{}, nil
-		},
-		EnqueueBatchFunc: func(ctx context.Context, input *EnqueueBatchInput) (output *EnqueueBatchOutput, e error) {
-			return &EnqueueBatchOutput{}, nil
 		},
 	}
 	type args struct {
@@ -569,6 +564,150 @@ func TestJobWorker_Enqueue(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Errorf("JobWorker.Enqueue() error = %v, wantErr %v", err, tt.wantErr)
 				return
+			}
+		})
+	}
+}
+
+func TestJobWorker_EnqueueBatch(t *testing.T) {
+	conn := &ConnectorMock{
+		NameFunc: func() string {
+			return "test"
+		},
+		EnqueueBatchFunc: func(ctx context.Context, input *EnqueueBatchInput) (output *EnqueueBatchOutput, e error) {
+
+			if input.Queue == "" {
+				return nil, errors.New("dummy")
+			}
+
+			var successful []string
+			for _, v := range input.Entries {
+				successful = append(successful, v.ID)
+			}
+			return &EnqueueBatchOutput{
+				Successful: successful,
+			}, nil
+		},
+	}
+	//conn2 := &ConnectorMock{
+	//	NameFunc: func() string {
+	//		return "test"
+	//	},
+	//	EnqueueBatchFunc: func(ctx context.Context, input *EnqueueBatchInput) (output *EnqueueBatchOutput, e error) {
+	//		return &EnqueueBatchOutput{}, nil
+	//	},
+	//}
+	type args struct {
+		input *EnqueueBatchInput
+	}
+	tests := []struct {
+		name    string
+		jw      *JobWorker
+		args    args
+		want    *EnqueueBatchOutput
+		wantErr bool
+	}{
+		{
+			name: "normal case",
+			jw: func() *JobWorker {
+				j, _ := New(&Setting{
+					Primary: conn,
+				})
+				return j
+			}(),
+			args: args{
+				input: &EnqueueBatchInput{
+					Queue: "foo",
+					Entries: []*EnqueueBatchEntry{
+						{
+							ID:      "a-1",
+							Content: "hello",
+						},
+						{
+							ID:      "a-2",
+							Content: "hello",
+						},
+						{
+							ID:      "a-3",
+							Content: "hello",
+						},
+					},
+				},
+			},
+			want: &EnqueueBatchOutput{
+				Successful: []string{"a-1", "a-2", "a-3"},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "no active conn",
+			jw:      &JobWorker{},
+			args:    args{},
+			wantErr: true,
+		},
+		{
+			name: "duplicate entry id",
+			jw: func() *JobWorker {
+				j, _ := New(&Setting{
+					Primary: conn,
+				})
+				return j
+			}(),
+			args: args{
+				input: &EnqueueBatchInput{
+					Queue: "foo",
+					Entries: []*EnqueueBatchEntry{
+						{
+							ID:      "a-1",
+							Content: "hello",
+						},
+						{
+							ID:      "a-1",
+							Content: "hello",
+						},
+						{
+							ID:      "a-3",
+							Content: "hello",
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "error case",
+			jw: func() *JobWorker {
+				j, _ := New(&Setting{
+					Primary: conn,
+				})
+				return j
+			}(),
+			args: args{
+				input: &EnqueueBatchInput{
+					Queue: "",
+					Entries: []*EnqueueBatchEntry{
+						{
+							ID:      "a-1",
+							Content: "hello",
+						},
+					},
+				},
+			},
+			want: &EnqueueBatchOutput{
+				Failed: []string{"a-1"},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.jw.EnqueueBatch(context.Background(), tt.args.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("JobWorker.EnqueueBatch() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("JobWorker.EnqueueBatch() got = %v, want %v", got, tt.want)
 			}
 		})
 	}
