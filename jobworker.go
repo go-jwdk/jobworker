@@ -74,25 +74,20 @@ func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) (*Enqueue
 		_, err := conn.Enqueue(ctx, input)
 		if err == nil {
 			// success
-			break
+			return &EnqueueOutput{}, nil
 		}
 		if err == ErrJobDuplicationDetected {
 			// success
 			jw.debug("skip enqueue a duplication job")
-			break
+			return &EnqueueOutput{}, nil
 		}
 
 		// fail
 		jw.debug("could not enqueue job. priority:", priority+1, "err:", err)
 		jw.connProvider.MarkDead(conn)
-		errs.Errors = append(errs.Errors, err)
+		errs.Append(err)
 	}
-
-	err := errs.ErrorOrNil()
-	if err != nil {
-		return nil, err
-	}
-	return &EnqueueOutput{}, nil
+	return nil, errs.ErrorOrNil()
 }
 
 func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) (*EnqueueBatchOutput, error) {

@@ -331,7 +331,7 @@ func TestJobWorker_Work_Runs_Only_Once(t *testing.T) {
 		queue2worker: make(map[string]*workerWithOption),
 	}
 	go func() {
-		jw.Work(&WorkSetting{})
+		_ = jw.Work(&WorkSetting{})
 	}()
 	time.Sleep(time.Millisecond)
 	if err := jw.Work(&WorkSetting{}); err != ErrAlreadyStarted {
@@ -373,13 +373,13 @@ func newSub(conn Connector, jobSize int) Subscription {
 
 func TestJobWorker_Main(t *testing.T) {
 
-	var sub Subscription
-	conn := &ConnectorMock{
+	var conn *ConnectorMock
+	conn = &ConnectorMock{
 		NameFunc: func() string {
 			return "test"
 		},
 		SubscribeFunc: func(ctx context.Context, input *SubscribeInput) (output *SubscribeOutput, e error) {
-			return &SubscribeOutput{Subscription: sub}, nil
+			return &SubscribeOutput{Subscription: newSub(conn, 3)}, nil
 		},
 		CompleteJobFunc: func(ctx context.Context, input *CompleteJobInput) (output *CompleteJobOutput, e error) {
 			return &CompleteJobOutput{}, nil
@@ -391,11 +391,29 @@ func TestJobWorker_Main(t *testing.T) {
 			return nil
 		},
 	}
-	sub = newSub(conn, 3)
+
+	var conn2 *ConnectorMock
+	conn2 = &ConnectorMock{
+		NameFunc: func() string {
+			return "test"
+		},
+		SubscribeFunc: func(ctx context.Context, input *SubscribeInput) (output *SubscribeOutput, e error) {
+			return &SubscribeOutput{Subscription: newSub(conn2, 3)}, nil
+		},
+		CompleteJobFunc: func(ctx context.Context, input *CompleteJobInput) (output *CompleteJobOutput, e error) {
+			return &CompleteJobOutput{}, nil
+		},
+		FailJobFunc: func(ctx context.Context, input *FailJobInput) (output *FailJobOutput, e error) {
+			return &FailJobOutput{}, nil
+		},
+		CloseFunc: func() error {
+			return nil
+		},
+	}
 
 	jw, err := New(&Setting{
 		Primary:   conn,
-		Secondary: conn,
+		Secondary: conn2,
 	})
 	if err != nil {
 		t.Errorf("JobWorker.New() error = %v", err)
@@ -431,5 +449,127 @@ func TestJobWorker_Main(t *testing.T) {
 	ctx, _ = context.WithTimeout(ctx, 3*time.Second)
 	if err := jw.Shutdown(ctx); err != nil {
 		t.Errorf("JobWorker.Shutdown() error = %v", err)
+	}
+}
+
+func TestJobWorker_Enqueue(t *testing.T) {
+	conn := &ConnectorMock{
+		NameFunc: func() string {
+			return "test"
+		},
+		EnqueueFunc: func(ctx context.Context, input *EnqueueInput) (output *EnqueueOutput, e error) {
+			if input.Content == "" {
+				return nil, errors.New("dummy")
+			}
+			if input.Content == "duplication" {
+				return nil, ErrJobDuplicationDetected
+			}
+			return &EnqueueOutput{}, nil
+		},
+		EnqueueBatchFunc: func(ctx context.Context, input *EnqueueBatchInput) (output *EnqueueBatchOutput, e error) {
+			return &EnqueueBatchOutput{}, nil
+		},
+	}
+	conn2 := &ConnectorMock{
+		NameFunc: func() string {
+			return "test"
+		},
+		EnqueueFunc: func(ctx context.Context, input *EnqueueInput) (output *EnqueueOutput, e error) {
+			return &EnqueueOutput{}, nil
+		},
+		EnqueueBatchFunc: func(ctx context.Context, input *EnqueueBatchInput) (output *EnqueueBatchOutput, e error) {
+			return &EnqueueBatchOutput{}, nil
+		},
+	}
+	type args struct {
+		input *EnqueueInput
+	}
+	tests := []struct {
+		name    string
+		jw      *JobWorker
+		args    args
+		want    *EnqueueOutput
+		wantErr bool
+	}{
+		{
+			name: "normal case",
+			jw: func() *JobWorker {
+				j, _ := New(&Setting{
+					Primary: conn,
+				})
+				return j
+			}(),
+			args: args{
+				input: &EnqueueInput{
+					Queue:   "foo",
+					Content: "hello",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "no active conn",
+			jw:      &JobWorker{},
+			args:    args{},
+			wantErr: true,
+		},
+		{
+			name: "job duplication detected",
+			jw: func() *JobWorker {
+				j, _ := New(&Setting{
+					Primary: conn,
+				})
+				return j
+			}(),
+			args: args{
+				input: &EnqueueInput{
+					Queue:   "foo",
+					Content: "duplication",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "unknown error",
+			jw: func() *JobWorker {
+				j, _ := New(&Setting{
+					Primary: conn,
+				})
+				return j
+			}(),
+			args: args{
+				input: &EnqueueInput{
+					Queue:   "foo",
+					Content: "",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "success secondary",
+			jw: func() *JobWorker {
+				j, _ := New(&Setting{
+					Primary:   conn,
+					Secondary: conn2,
+				})
+				return j
+			}(),
+			args: args{
+				input: &EnqueueInput{
+					Queue:   "foo",
+					Content: "",
+				},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.jw.Enqueue(context.Background(), tt.args.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("JobWorker.Enqueue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+		})
 	}
 }
