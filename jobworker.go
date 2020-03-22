@@ -357,6 +357,55 @@ func (jw *JobWorker) newActiveJobHandlerFunc(handler func(job *Job)) func() {
 	}
 }
 
+type Stats struct {
+	Jobs []*JobStat
+}
+
+type JobStat struct {
+	Conn            string
+	Queue           string
+	Content         string
+	Metadata        map[string]string
+	CustomAttribute map[string]*CustomAttribute
+}
+
+func newJobStat(job *Job) *JobStat {
+	metadata := make(map[string]string)
+	for k, v := range job.Metadata {
+		metadata[k] = v
+	}
+	customAttribute := make(map[string]*CustomAttribute)
+	for k, v := range job.CustomAttribute {
+		customAttribute[k] = &CustomAttribute{
+			DataType:    v.DataType,
+			BinaryValue: v.BinaryValue,
+			StringValue: v.StringValue,
+		}
+	}
+	return &JobStat{
+		Conn:            job.Conn.Name(),
+		Queue:           job.QueueName,
+		Content:         job.Content,
+		Metadata:        metadata,
+		CustomAttribute: customAttribute,
+	}
+}
+
+func (jw *JobWorker) GetStats() *Stats {
+	var jobs []*Job
+	jw.mu.Lock()
+	for v := range jw.activeJob {
+		jobs = append(jobs, v)
+	}
+	jw.mu.Unlock()
+	var jobStats []*JobStat
+	for _, job := range jobs {
+		jobStats = append(jobStats, newJobStat(job))
+	}
+
+	return &Stats{Jobs: jobStats}
+}
+
 func (jw *JobWorker) shuttingDown() bool {
 	return atomic.LoadInt32(&jw.inShutdown) != 0
 }
