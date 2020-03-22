@@ -3,6 +3,7 @@ package jobworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -338,31 +339,47 @@ func TestJobWorker_Work_Runs_Only_Once(t *testing.T) {
 	}
 }
 
-func TestJobWorker_Work(t *testing.T) {
-
-	newSub := func() Subscription {
-		queue := make(chan *Job)
-		sub := &SubscriptionMock{
-			ActiveFunc: func() bool {
-				return true
-			},
-			QueueFunc: func() chan *Job {
-				return queue
-			},
-			UnSubscribeFunc: func() error {
-				close(queue)
-				return nil
-			},
-		}
-		return sub
+func newSub(conn Connector, jobSize int) Subscription {
+	jobs := make(chan *Job, jobSize)
+	queue := make(chan *Job)
+	sub := &SubscriptionMock{
+		ActiveFunc: func() bool {
+			return true
+		},
+		QueueFunc: func() chan *Job {
+			return queue
+		},
+		UnSubscribeFunc: func() error {
+			close(jobs)
+			return nil
+		},
 	}
+	go func() {
+		for i := 0; i < jobSize; i++ {
+			jobs <- &Job{
+				Conn:      conn,
+				QueueName: "foo",
+				Content:   fmt.Sprintf("hello %d", i),
+			}
+		}
+	}()
+	go func() {
+		for job := range jobs {
+			queue <- job
+		}
+	}()
+	return sub
+}
 
+func TestJobWorker_Main(t *testing.T) {
+
+	var sub Subscription
 	conn := &ConnectorMock{
 		NameFunc: func() string {
 			return "test"
 		},
 		SubscribeFunc: func(ctx context.Context, input *SubscribeInput) (output *SubscribeOutput, e error) {
-			return &SubscribeOutput{Subscription: newSub()}, nil
+			return &SubscribeOutput{Subscription: sub}, nil
 		},
 		CompleteJobFunc: func(ctx context.Context, input *CompleteJobInput) (output *CompleteJobOutput, e error) {
 			return &CompleteJobOutput{}, nil
@@ -374,49 +391,45 @@ func TestJobWorker_Work(t *testing.T) {
 			return nil
 		},
 	}
+	sub = newSub(conn, 3)
 
-	type fields struct {
-		queue2worker map[string]*workerWithOption
+	jw, err := New(&Setting{
+		Primary:   conn,
+		Secondary: conn,
+	})
+	if err != nil {
+		t.Errorf("JobWorker.New() error = %v", err)
+		return
 	}
-	type args struct {
-		s *WorkSetting
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		{
-			name: "normal case",
-			fields: fields{
-				queue2worker: map[string]*workerWithOption{
-					"foo": {
-						worker: &defaultWorker{},
-						opt: &Option{
-							SubscribeMetadata: make(map[string]string),
-						},
-					},
-				},
-			},
-			args: args{
-				s: &WorkSetting{},
-			},
-			wantErr: false,
+
+	jw.Register("foo", &defaultWorker{
+		func(job *Job) error {
+			jw.debug("[test] content:", job.Content)
+			return nil
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			jw := &JobWorker{
-				queue2worker: tt.fields.queue2worker,
-			}
-			jw.connProvider.Register(1, conn)
-			go func() {
-				if err := jw.Work(tt.args.s); (err != nil) != tt.wantErr {
-					t.Errorf("JobWorker.Work() error = %v, wantErr %v", err, tt.wantErr)
-				}
-			}()
-			time.Sleep(time.Second)
-		})
+	}, SubscribeMetadata("X-JWDK-KEY", "DEADBEEF"))
+
+	jw.RegisterFunc("bar", func(job *Job) error {
+		jw.debug("[test] content:", job.Content)
+		return nil
+	}, SubscribeMetadata("X-JWDK-KEY", "DEADBEEF"))
+
+	jw.RegisterOnShutdown(func() {
+		jw.debug("[test] call OnShutdown func")
+	})
+
+	go func() {
+		if err := jw.Work(&WorkSetting{
+			HeartbeatInterval: 1,
+			OnHeartBeat:       func(job *Job) {},
+		}); err != nil {
+			t.Errorf("JobWorker.Work() error = %v", err)
+		}
+	}()
+	time.Sleep(time.Second)
+	ctx := context.Background()
+	ctx, _ = context.WithTimeout(ctx, 3*time.Second)
+	if err := jw.Shutdown(ctx); err != nil {
+		t.Errorf("JobWorker.Shutdown() error = %v", err)
 	}
 }

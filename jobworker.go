@@ -373,8 +373,10 @@ func (jw *JobWorker) trackJob(job *Job, add bool) {
 		jw.activeJob = make(map[*Job]struct{})
 	}
 	if add {
-		jw.activeJob[job] = struct{}{}
-		jw.activeJobWg.Add(1)
+		if !jw.shuttingDown() {
+			jw.activeJob[job] = struct{}{}
+			jw.activeJobWg.Add(1)
+		}
 	} else {
 		delete(jw.activeJob, job)
 		jw.activeJobWg.Done()
