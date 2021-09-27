@@ -327,19 +327,6 @@ func TestJobWorker_WorkOnceSafely(t *testing.T) {
 	}
 }
 
-func TestJobWorker_Work_Runs_Only_Once(t *testing.T) {
-	jw := &JobWorker{
-		queue2worker: make(map[string]*workerWithOption),
-	}
-	go func() {
-		_ = jw.Work(&WorkSetting{})
-	}()
-	time.Sleep(time.Millisecond)
-	if err := jw.Work(&WorkSetting{}); err != ErrAlreadyStarted {
-		t.Errorf("JobWorker.Work() err=%v want=%v", err, ErrAlreadyStarted)
-	}
-}
-
 func newSub(conn Connector, jobSize int) Subscription {
 	jobs := make(chan *Job, jobSize)
 	queue := make(chan *Job)

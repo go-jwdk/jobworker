@@ -49,8 +49,6 @@ type JobWorker struct {
 
 	loggerFunc LoggerFunc
 
-	started int32
-
 	inShutdown  int32
 	mu          sync.Mutex
 	activeJob   map[*Job]struct{}
@@ -196,11 +194,6 @@ var (
 
 func (jw *JobWorker) Work(s *WorkSetting) error {
 
-	if atomic.LoadInt32(&jw.started) == 1 {
-		return ErrAlreadyStarted
-	}
-	atomic.StoreInt32(&jw.started, 1)
-
 	s.setDefaults()
 
 	var b internal.Broadcaster
@@ -227,6 +220,7 @@ func (jw *JobWorker) Work(s *WorkSetting) error {
 				Metadata: w.opt.SubscribeMetadata,
 			})
 			if err != nil {
+				b.Broadcast()
 				return err
 			}
 			b.Register(func() {
