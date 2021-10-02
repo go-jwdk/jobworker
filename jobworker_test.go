@@ -434,7 +434,8 @@ func TestJobWorker_Main(t *testing.T) {
 	}()
 	time.Sleep(time.Second)
 	ctx := context.Background()
-	ctx, _ = context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	if err := jw.Shutdown(ctx); err != nil {
 		t.Errorf("JobWorker.Shutdown() error = %v", err)
 	}

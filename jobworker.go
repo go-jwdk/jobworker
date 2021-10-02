@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/go-jwdk/jobworker/internal"
+	"github.com/hashicorp/go-multierror"
+	"github.com/vvatanabe/errsgroup"
 )
 
 type Setting struct {
@@ -67,7 +69,7 @@ func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) (*Enqueue
 		return nil, ErrNoActiveConn
 	}
 
-	var errs internal.MultiError
+	var errs error
 	for priority, conn := range conns {
 		_, err := conn.Enqueue(ctx, input)
 		if err == nil {
@@ -83,9 +85,9 @@ func (jw *JobWorker) Enqueue(ctx context.Context, input *EnqueueInput) (*Enqueue
 		// fail
 		jw.debug("could not enqueue job. priority:", priority+1, "err:", err)
 		jw.connProvider.MarkDead(conn)
-		errs.Append(err)
+		errs = multierror.Append(errs, err)
 	}
-	return nil, errs.ErrorOrNil()
+	return nil, errs
 }
 
 func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput) (*EnqueueBatchOutput, error) {
@@ -105,7 +107,7 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 		return nil, ErrDuplicateEntryID
 	}
 
-	var errs internal.MultiError
+	var errs error
 	for priority, conn := range conns {
 
 		var entries []*EnqueueBatchEntry
@@ -121,7 +123,7 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 		})
 		if err != nil {
 			jw.debug("could not batch enqueue job all. priority: ", priority+1, "error: ", err)
-			errs.Append(err)
+			errs = multierror.Append(errs, err)
 			jw.connProvider.MarkDead(conn)
 			continue
 		}
@@ -146,7 +148,7 @@ func (jw *JobWorker) EnqueueBatch(ctx context.Context, input *EnqueueBatchInput)
 		}
 	}
 
-	return &out, errs.ErrorOrNil()
+	return &out, errs
 }
 
 func (jw *JobWorker) RegisterFunc(queue string, f WorkerFunc, opts ...OptionFunc) {
@@ -187,10 +189,6 @@ func (s *WorkSetting) setDefaults() {
 		s.WorkerConcurrency = workerConcurrencyDefault
 	}
 }
-
-var (
-	ErrAlreadyStarted = errors.New("already started")
-)
 
 func (jw *JobWorker) Work(s *WorkSetting) error {
 
@@ -383,6 +381,33 @@ func newJobStat(job *Job) *JobStat {
 		Metadata:        metadata,
 		CustomAttribute: customAttribute,
 	}
+}
+
+func (jw *JobWorker) ForceExitActiveJob(ctx context.Context) error {
+	g := errsgroup.NewGroup()
+	for job := range jw.activeJob {
+		job := job
+		g.Go(func() error {
+			if job.IsFinished() {
+				return nil
+			}
+			_, err := job.Conn.FailJob(ctx, &FailJobInput{
+				Job: job,
+			})
+			if err != nil {
+				return err
+			}
+			job.finished()
+			return nil
+		})
+	}
+	errs := g.Wait()
+	if len(errs) > 0 {
+		return &multierror.Error{
+			Errors: errs,
+		}
+	}
+	return nil
 }
 
 func (jw *JobWorker) GetStats() *Stats {

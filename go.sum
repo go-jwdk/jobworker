@@ -1,2 +1,7 @@
-github.com/vvatanabe/goretryer v0.1.0 h1:58hEVarureY1nMB9Z1wVNthdnF+e+GfT8fhaaRQAGYg=
-github.com/vvatanabe/goretryer v0.1.0/go.mod h1:pdYBgjkQKXCGIygSNT/uPJA+MSZnCiE61hzDVC9KENM=
+github.com/hashicorp/errwrap v1.0.0/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=
+github.com/hashicorp/errwrap v1.1.0 h1:OxrOeh75EUXMY8TBjag2fzXGZ40LB6IKw45YeGUDY2I=
+github.com/hashicorp/errwrap v1.1.0/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=
+github.com/hashicorp/go-multierror v1.1.1 h1:H5DkEtf6CXdFp0N0Em5UCwQpXMWke8IA0+lD48awMYo=
+github.com/hashicorp/go-multierror v1.1.1/go.mod h1:iw975J/qwKPdAO1clOe2L8331t/9/fmwbPZ6JB6eMoM=
+github.com/vvatanabe/errsgroup v0.9.0 h1:l494Rl+BzCgcKaRw2+ugnAfuAl7iqvJsseN+hCXzEYM=
+github.com/vvatanabe/errsgroup v0.9.0/go.mod h1:hbxfMiD/jF3W9bP/wHuxDO6GYYweWjBSQI6N2EPVoHo=
