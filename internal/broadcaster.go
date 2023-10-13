@@ -14,8 +14,8 @@ func (b *Broadcaster) Register(operation func()) {
 	}
 	go func() {
 		b.mu.Lock()
-		defer b.mu.Unlock()
 		b.c.Wait()
+		b.mu.Unlock()
 		operation()
 	}()
 }
